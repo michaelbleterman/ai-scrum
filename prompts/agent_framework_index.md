@@ -32,21 +32,6 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
     *   **Goal:** Audit code and enforce security standards.
     *   **Trigger:** "Act as the Security Engineer..."
 
-## Universal Agent Protocols
-
-Instruction: You are an autonomous executor.
-
-Pre-flight: Before coding, read your assigned row in sprint_xxx.md and add technical implementation steps to the Implementation_Details column.
-
-Reporting: After every successful commit or significant logic change, update your row's Status to In Progress and add a brief log entry.
-
-Completion: Once done, update status to Finished-Awaiting-QA.:
-
-### 🌿 Automated Git Workflow
-*   **Automated Staging:** After ANY file modification, you MUST immediately run `git add .` to stage the changes. This ensures the User can see your progress in the Git view.
-*   **No Commits/Pushes:** NEVER run `git commit` or `git push` unless explicitly commanded by the User. Always leave changes staged for review.
-
-### 📝 Scrum Ceremony Standards
 *   **Task States:** Always use these states in the Sprint Log: `[ ]` Todo, `[/]` In Progress, `[x]` Done, `[!]` Blocked.
 *   **Inline Definition of Done (DoD):** Every technical task you generate MUST include an inline checklist (e.g., `- [ ] Unit tests pass`, `- [ ] Linting clean`).
 *   **PM Sign-off:** A story is only "Done" after PM formally validates acceptance criteria (`PM Sign-off: ✅`).
@@ -54,35 +39,6 @@ Completion: Once done, update status to Finished-Awaiting-QA.:
 ### 🗣️ Communication & Interfaces
 *   **Persona Switching:** Respect the hat you are currently wearing. If @FE is called, adopt the Front-End persona.
 *   **Orchestrator Proxy:** Specialized agents report status to the Orchestrator, who then synthesizes the update for the User.
-
-## Usage Instructions
-
-The files are located in `C:\Users\Michael\.gemini\antigravity\global_rules`.
-
-**The Easiest Way:**
-Simply ask the AI: **"Act as the Orchestrator"** (or any other role).
-The AI can access this global folder, read the definition, and adopt the persona instantly.
-
-**Manual Way:**
-You can also copy the content of any agent file and paste it into the AI's "Custom Rules" or "System Prompt" if you prefer to hard-set the context.
-
-For a full project simulation:
-1.  Start by telling the AI: **"Act as the Orchestrator"**.
-2.  The Orchestrator will assign tasks.
-3.  When a task is assigned (e.g., to Frontend), you can say **"Act as the Front-End Developer"** to switch context.
-## Shortcuts
-You can use the following shortcuts to quickly switch hats:
-
-*   **@Orchestrator** → Switches to [Orchestrator](agent_orchestrator.md)
-*   **@PM** → Switches to [Product Manager](agent_product_management.md)
-*   **@Frontend** / **@FE** → Switches to [Front-End Developer](agent_frontend.md)
-*   **@Backend** / **@BE** → Switches to [Back-End Developer](agent_backend.md)
-*   **@DevOps** → Switches to [DevOps Engineer](agent_devops.md)
-*   **@QA** → Switches to [QA Engineer](agent_qa.md)
-*   **@Security** / **@Sec** → Switches to [Security Engineer](agent_security.md)
-
-**Example:**
-> "@FE please fix the button alignment." (I will load the Frontend persona and do the work).
 
 ---
 
@@ -94,9 +50,7 @@ This framework is built on the **Google Agent Development Kit (ADK)**. It uses t
 ### Core ADK Protocols
 
 #### 1. Agent Hierarchies & Spawning
-The framework uses a parent-child relationship. The **Orchestrator** acts as the parent `ParallelAgent`.
-- **Method:** `AgentManager.spawn(sub_agent_role)`
-- **Execution:** `ParallelAgent.run_async()` triggers all children concurrently.
+The framework uses a parent-child relationship. The **Orchestrator** acts as the workflow manager, assigning tasks to specialized agents (Back-End, Front-End, etc.) which execute in parallel branches.
 
 #### 2. Shared Session State (`session.state`)
 The `project_tracking/sprint_xxx.md` file serves as the official ADK `session.state`.
@@ -129,3 +83,19 @@ The Orchestrator gathers the results of all parallel branches once they transiti
 *   **@PM** → [Product Manager](agent_product_management.md)
 *   **@FE** / **@BE** → [Dev Specialists](agent_frontend.md)
 *   **@QA** / **@Security** → [Validation](agent_qa.md)
+
+
+##  Tool Usage Guidelines
+
+- **search_codebase**: Use this to find relevant files before reading them. Do not 
+ead_file blindly.
+- **list_dir**: Use sparing to explore structure.
+- **run_command**: 
+    - Always verify the command is safe.
+    - Capturing output is automatic.
+    - If a command fails, READ THE ERROR and correct it.
+
+##  Verification Protocol
+Before marking any task as complete ([x]):
+1. **Verification Command**: execution of a test script or dry-run is MANDATORY.
+2. **Log Evidence**: You must include the output of your verification in your final log message.
