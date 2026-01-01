@@ -36,6 +36,7 @@ To run the sprint runner:
 python scripts/parallel_sprint_runner.py
 ```
 
+
 ## Testing
 
 Run unit tests:
@@ -43,3 +44,18 @@ Run unit tests:
 ```bash
 python -m unittest discover tests/
 ```
+
+### End-to-End (E2E) Test Suite
+
+Run the full lifecycle E2E test (mocks user and agents):
+
+```bash
+python -m unittest tests/test_e2e_real.py
+```
+
+This test simulates:
+1.  **Parallel Execution**: Agents create tasks.
+2.  **QA Phase**: QA Agent detects a defect.
+3.  **Defect Loop**: Backend Agent fixes the defect.
+4.  **Verification**: QA Agent passes the fix.
+5.  **Demo & Retro**: Orchestrator generates reports.

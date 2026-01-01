@@ -1,7 +1,9 @@
 import asyncio
 import os
 import re
-from google.adk.agents import LlmAgent, InvocationContext
+import sys
+import traceback
+from google.adk.agents import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
@@ -9,207 +11,404 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 
 # Import Config and Modules
 from sprint_config import SprintConfig
-from sprint_tools import worker_tools, orchestrator_tools, update_sprint_task_status, search_codebase
-from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks
+from sprint_tools import worker_tools, orchestrator_tools, qa_tools, update_sprint_task_status
+from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks
 
-async def main():
-    # Validate Config
-    SprintConfig.validate()
-    
-    # 1. Detect Sprint
-    latest_sprint = detect_latest_sprint_file(SprintConfig.SPRINT_DIR)
-    if not latest_sprint:
-        print(f"No sprint files found in {SprintConfig.SPRINT_DIR}")
-        return
-    
-    print(f"[*] Analyzing {latest_sprint} for parallel tasks...")
+import logging
 
-    # 2. Parse Tasks
-    tasks_to_execute = parse_sprint_tasks(latest_sprint)
+# --- Logging Setup ---
+def setup_logging():
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler("sprint_debug.log", mode='a', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    return logging.getLogger("SprintRunner")
+
+logger = setup_logging()
+
+def log(msg):
+    # Log to file and console via logger
+    logger.info(msg)
+
+# retry_decorator = retry(
+#     wait=wait_exponential(multiplier=30, min=30, max=300),
+#     stop=stop_after_attempt(5),
+#     retry=retry_if_exception(retry_predicate),
+#     reraise=True
+# )
+def retry_decorator(func):
+    return func
+
+def default_agent_factory(name, instruction, tools, model=None):
+    if model is None:
+        model = SprintConfig.MODEL_NAME
+    return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
+
+# --- Phase 1: Parallel Execution ---
+async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+    log("\n[Phase 1] Parallel Execution: Checking for pending tasks...")
+    tasks_to_execute = parse_sprint_tasks(sprint_file)
     if not tasks_to_execute:
-        print("No pending tasks found in the latest sprint.")
-        return
+        log("    No pending tasks ([ ]) found.")
+        return 0
 
-    print(f"[*] Found {len(tasks_to_execute)} tasks to execute in parallel.")
-
-    # 3. Setup Session Service
-    session_service = InMemorySessionService()
-
-    # 4. Initialize Orchestrator
-    print("[*] Initializing Orchestrator Agent...")
-    orchestrator_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_orchestrator.md")
-    framework_index_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_framework_index.md")
+    log(f"    Found {len(tasks_to_execute)} tasks to execute.")
     
-    framework_instruction = ""
-    if os.path.exists(framework_index_path):
-        with open(framework_index_path, "r", encoding="utf-8") as f:
-            framework_instruction = f.read()
-
-    if os.path.exists(orchestrator_prompt_path):
-        with open(orchestrator_prompt_path, "r", encoding="utf-8") as f:
-            orchestrator_instruction = f.read()
-    else:
-        orchestrator_instruction = "You are the Orchestrator."
-    
-    # Prepend Framework Instructions
-    orchestrator_instruction = f"{framework_instruction}\n\n{orchestrator_instruction}"
-
-    orchestrator_agent = LlmAgent(
-        name="Orchestrator",
-        instruction=orchestrator_instruction,
-        model=SprintConfig.MODEL_NAME,
-        tools=orchestrator_tools
-    )
-    
-    await session_service.create_session(
-        app_name="SprintRunner",
-        user_id="user",
-        session_id="orchestrator_session"
-    )
-    
-    orchestrator_runner = Runner(
-        app_name="SprintRunner",
-        agent=orchestrator_agent,
-        session_service=session_service
-    )
-    
-    orchestrator_lock = asyncio.Lock()
-
-    async def invoke_orchestrator_update(task_desc, role, status_instruction):
-        async with orchestrator_lock:
-            print(f"    [Orchestrator] Request: {status_instruction} for task: {task_desc}")
-            try:
-                user_msg = f"The {role} Agent has valid update for task: '{task_desc}'. Please {status_instruction} in the sprint file."
-                
-                async for event in orchestrator_runner.run_async(
-                    user_id="user",
-                    session_id="orchestrator_session",
-                    new_message=types.Content(parts=[types.Part(text=user_msg)]),
-                    invocation_id=None
-                ):
-                     if event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if getattr(part, 'function_call', None):
-                                print(f"    [Orchestrator ToolCall] {part.function_call.name}")
-                            if getattr(part, 'function_response', None):
-                                print(f"    [Orchestrator ToolResponse] {part.function_response.name}")
-
-            except Exception as e:
-                 print(f"    [Orchestrator Error] {e}")
-
-
-    # 5. Worker Logic
     concurrency_limit = SprintConfig.CONCURRENCY_LIMIT
     sem = asyncio.Semaphore(concurrency_limit)
-    print(f"[*] Starting parallel execution (Concurrency limit: {concurrency_limit})...")
-    
     role_map = SprintConfig.get_role_map()
 
-    async def run_task(task_info, task_index):
+    async def run_single_task(task_info, task_index):
         async with sem:
             role_raw = task_info["role"]
             role = role_raw.lower()
             desc = task_info["desc"]
             
-            print(f"\n    [Task {task_index+1}] Starting @{role_raw}: {desc}")
+            log(f"\n    [Task {task_index+1}] Starting @{role_raw}: {desc}")
             
-            # --- ORCHESTRATOR: MARK IN PROGRESS ---
-            await invoke_orchestrator_update(desc, role_raw, status_instruction="mark it as in-progress ([/])")
-            
+            # DIRECT UPDATE: Mark in-progress
+            try:
+                await update_sprint_task_status(desc, "[/]", SprintConfig.SPRINT_DIR)
+            except Exception as e:
+                log(f"    [Update Error] Failed to mark in-progress: {e}")
+
             prompt_file = role_map.get(role_raw, "agent_orchestrator.md")
             prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, prompt_file)
-            
             if os.path.exists(prompt_path):
                 with open(prompt_path, "r", encoding="utf-8") as f:
                     instruction = f.read()
             else:
                 instruction = f"Act as {role}."
 
-            # Prepend Framework Instructions for Workers too
-            full_instruction = f"{framework_instruction}\n\n{instruction}"
-
-            sanitized_role = re.sub(r'[^a-zA-Z0-9_]', '', role)
-            agent_name = f"{sanitized_role}_{task_index}"
+            agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
+            full_instruction = f"{framework_instruction}\n\n{instruction}\n\nTask: {desc}"
             
-            agent = LlmAgent(
+            agent = agent_factory(
                 name=agent_name,
-                instruction=f"{full_instruction}\n\nTask: {desc}",
-                model=SprintConfig.MODEL_NAME,
+                instruction=full_instruction,
                 tools=worker_tools
             )
 
-            worker_session_id = f"worker_session_{task_index}"
+            worker_pid = f"worker_{task_index}"
             await session_service.create_session(
-                app_name="SprintRunner",
-                user_id="user",
-                session_id=worker_session_id
+                app_name="SprintRunner", 
+                user_id="user", 
+                session_id=worker_pid
             )
-
             runner = Runner(
-                app_name="SprintRunner",
-                agent=agent,
+                app_name="SprintRunner", 
+                agent=agent, 
                 session_service=session_service
             )
 
-            def retry_predicate(e):
-                # Basic check for rate limits
-                msg = str(e).lower()
-                if "resource" in msg and "exhausted" in msg:
-                    print(f"    [Task {task_index+1}] [RetryCheck] Rate limit detected. Retrying...")
-                    return True
-                if "429" in msg:
-                    print(f"    [Task {task_index+1}] [RetryCheck] 429 detected. Retrying...")
-                    return True
-                return False
+            @retry_decorator
+            async def run_agent():
+                turn_count = 0
+                max_turns = 20
+                async for event in runner.run_async(
+                    user_id="user", 
+                    session_id=worker_pid, 
+                    new_message=types.Content(parts=[types.Part(text=f"Execute this task: {desc}")])
+                ):
+                    turn_count += 1
+                    if turn_count > max_turns:
+                        msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
+                        logger.error(msg)
+                        print(msg) # Print to stdout for test capture
+                        break
 
-            @retry(
-                wait=wait_exponential(multiplier=30, min=30, max=300),
-                stop=stop_after_attempt(5),
-                retry=retry_if_exception(retry_predicate),
-                reraise=True
-            )
-            async def run_with_retry():
-                try:
-                    async for event in runner.run_async(
-                        user_id="user",
-                        session_id=worker_session_id,
-                        new_message=types.Content(parts=[types.Part(text="Execute this task.")]),
-                        invocation_id=None
-                    ):
-                        if event.content and event.content.parts:
-                            for part in event.content.parts:
-                                if part.text:
-                                    print(f"    [{event.author}] {part.text.strip()}")
-                                
-                                if getattr(part, 'function_call', None):
-                                    print(f"    [ToolCall] {event.author} calling {part.function_call.name} with {part.function_call.args}")
-                                
-                                if getattr(part, 'function_response', None):
-                                    print(f"    [ToolResponse] {event.author} received from {part.function_response.name}")
-
-                except Exception as e:
-                    print(f"    [Error] {agent_name}: {type(e)}")
-                    raise e
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if part.text:
+                                msg = f"[Agent {role_raw}] Thought: {part.text}"
+                                logger.info(msg)
+                                print(msg)
+                            if getattr(part, 'function_call', None):
+                                msg = f"[Agent {role_raw}] Call: {part.function_call.name}({part.function_call.args})"
+                                logger.info(msg)
+                                print(msg)
 
             try:
-                await run_with_retry()
-                print(f"    [Task {task_index+1}] Completed @{role_raw}")
-                # --- ORCHESTRATOR: MARK DONE ---
-                await invoke_orchestrator_update(desc, role_raw, status_instruction="mark it as completed ([x])")
+                await run_agent()
+                log(f"    [Task {task_index+1}] Completed @{role_raw}")
+                # DIRECT UPDATE: Mark done
+                await update_sprint_task_status(desc, "[x]", SprintConfig.SPRINT_DIR)
+
             except Exception as e:
-                print(f"    [Task {task_index+1}] FAILED @{role_raw}")
-                # --- ORCHESTRATOR: MARK BLOCKED ---
-                await invoke_orchestrator_update(desc, role_raw, status_instruction="mark it as blocked ([!]) because it failed.")
+                log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                # DIRECT UPDATE: Mark blocked
+                await update_sprint_task_status(desc, "[!]", SprintConfig.SPRINT_DIR)
 
-
-    tasks = [run_task(task, idx) for idx, task in enumerate(tasks_to_execute)]
+    tasks = [run_single_task(task, idx) for idx, task in enumerate(tasks_to_execute)]
     await asyncio.gather(*tasks)
+    return len(tasks_to_execute)
+
+# --- Phase 2: QA & Validation ---
+async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+    log("\n[Phase 2] QA Verification: Validating completed tasks...")
     
-    print(f"\n[SprintRunner] Mission execution complete.")
+    all_tasks = get_all_sprint_tasks(sprint_file)
+    review_tasks = [t for t in all_tasks if t['status'] == 'done']
+    
+    if not review_tasks:
+        log("    No tasks to review.")
+        return False
+
+    task_list_str = "\n".join([f"- {t['desc']} (@{t['role']})" for t in review_tasks])
+    log(f"    Verifying {len(review_tasks)} tasks...")
+
+    qa_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_qa.md")
+    if os.path.exists(qa_prompt_path):
+        with open(qa_prompt_path, "r", encoding="utf-8") as f:
+             qa_instruction = f.read()
+    else:
+        qa_instruction = "You are the QA Engineer."
+
+    qa_full_instruction = (
+        f"{framework_instruction}\n\n{qa_instruction}\n\nTasks to Verify:\n{task_list_str}\n\n"
+        "INSTRUCTIONS:\n"
+        "1. For each task, generate and run E2E/Playwright/Unit tests to verify it.\n"
+        "2. If a task fails verification, use the `add_sprint_task` tool to create a NEW task with description starting with 'DEFECT: ...'.\n"
+        "3. Write a summary report to 'project_tracking/QA_REPORT.md'.\n"
+        "4. If all validations pass, explicitly state 'ALL PASSED' in your final response."
+    )
+
+    qa_agent = agent_factory(
+        name="QA_Engineer",
+        instruction=qa_full_instruction,
+        tools=qa_tools
+    )
+
+    await session_service.create_session(
+        app_name="SprintRunner", 
+        user_id="user", 
+        session_id="qa_session"
+    )
+    runner = Runner(
+        app_name="SprintRunner", 
+        agent=qa_agent, 
+        session_service=session_service
+    )
+    
+    defects_created = False
+    
+    @retry_decorator
+    async def run_qa():
+        nonlocal defects_created
+        async for event in runner.run_async(
+            user_id="user", 
+            session_id="qa_session", 
+            new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
+        ):
+             if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        logger.info(f"[QA] Thought: {part.text}")
+                    if getattr(part, 'function_call', None):
+                        logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
+                        if part.function_call.name == "add_sprint_task":
+                            defects_created = True
+
+    await run_qa()
+    
+    if defects_created:
+        log("    [QA] Defects were found and added to the sprint.")
+        return True
+    
+    log("    [QA] Verification complete. No new defects reported.")
+    return False
+
+# --- Phase 3: Demo ---
+async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None):
+    log("\n[Phase 3] Demo & Feedback")
+    
+    orchestrator_agent = agent_factory(
+        name="Orchestrator",
+        instruction=f"{framework_instruction}\n\nYou are the Orchestrator. Goal: Prepare a Demo Walkthrough.\n"
+                    "1. Read the 'project_tracking/QA_REPORT.md'.\n"
+                    "2. Read the latest sprint file.\n"
+                    "3. Generate a 'project_tracking/DEMO_WALKTHROUGH.md' summarizing what was built and how to use it.\n",
+        tools=worker_tools 
+    )
+    
+    await session_service.create_session(
+        app_name="SprintRunner", 
+        user_id="user", 
+        session_id="demo_session"
+    )
+    runner = Runner(
+        app_name="SprintRunner", 
+        agent=orchestrator_agent, 
+        session_service=session_service
+    )
+    
+    @retry_decorator
+    async def run_demo():
+        async for event in runner.run_async(
+            user_id="user", 
+            session_id="demo_session", 
+            new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
+        ):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        logger.info(f"[Orchestrator] Thought: {part.text}")
+                    if getattr(part, 'function_call', None):
+                        logger.info(f"[Orchestrator] Call: {part.function_call.name}({part.function_call.args})")
+
+    await run_demo()
+    
+    log("    Demo Walkthrough generated: project_tracking/DEMO_WALKTHROUGH.md")
+    log("    [ACTION REQUIRED] Please review the demo file.")
+    
+    feedback = ""
+    # Capture Feedback
+    if input_callback:
+        feedback = input_callback("    Feedback: > ")
+    else:
+        try:
+            if os.environ.get("NON_INTERACTIVE"):
+                feedback = "No feedback provided (Non-interactive mode)."
+            else:
+                print("    >> Please enter your feedback for this sprint (or press Enter to skip):")
+                feedback = input("    Feedback: > ")
+        except EOFError:
+            feedback = "No feedback provided (EOF)."
+        
+    return feedback
+
+# --- Phase 4: Retro ---
+async def run_retro_phase(session_service, framework_instruction, sprint_file, demo_feedback, agent_factory=default_agent_factory):
+    log("\n[Phase 4] Retrospective")
+    
+    pm_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_product_management.md")
+    if os.path.exists(pm_prompt_path):
+        with open(pm_prompt_path, "r", encoding="utf-8") as f:
+             pm_instruction = f.read()
+    else:
+        pm_instruction = "You are the Product Manager."
+
+    user_feedback_section = f"\nUser Feedback from Demo: {demo_feedback}\n" if demo_feedback else "\nUser Feedback from Demo: None provided.\n"
+
+    pm_full_instruction = (
+        f"{framework_instruction}\n\n{pm_instruction}\n\n"
+        f"{user_feedback_section}\n"
+        "INSTRUCTIONS:\n"
+        "1. Read 'project_tracking/QA_REPORT.md' and 'project_tracking/DEMO_WALKTHROUGH.md'.\n"
+        "2. Generate 'project_tracking/SPRINT_REPORT.md'.\n"
+        "3. Parse the User Feedback and any outstanding issues.\n"
+        "4. Append new Action Items or User Stories to 'project_tracking/backlog.md'.\n"
+    )
+
+    pm_agent = agent_factory(
+        name="ProductManager",
+        instruction=pm_full_instruction,
+        tools=worker_tools
+    )
+    
+    await session_service.create_session(
+        app_name="SprintRunner", 
+        user_id="user", 
+        session_id="retro_session"
+    )
+    runner = Runner(
+        app_name="SprintRunner", 
+        agent=pm_agent, 
+        session_service=session_service
+    )
+    
+    @retry_decorator
+    async def run_retro():
+        async for event in runner.run_async(
+            user_id="user", 
+            session_id="retro_session", 
+            new_message=types.Content(parts=[types.Part(text="Conduct Retrospective.")])
+        ):
+             pass
+
+    await run_retro()
+    log("    Retrospective complete. Reports generated and Backlog updated.")
+
+# --- Lifecycle Runner ---
+class SprintRunner:
+    def __init__(self, agent_factory=default_agent_factory, input_callback=None):
+        self.agent_factory = agent_factory
+        self.input_callback = input_callback
+        self.session_service = InMemorySessionService()
+
+    async def run_cycle(self):
+        SprintConfig.validate()
+        
+        latest_sprint = detect_latest_sprint_file(SprintConfig.SPRINT_DIR)
+        if not latest_sprint:
+            log(f"No sprint files found in {SprintConfig.SPRINT_DIR}")
+            return
+        
+        log(f"[*] Starting Sprint Runner for {latest_sprint}")
+        
+        # Load shared framework instructions
+        framework_index_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_framework_index.md")
+        framework_instruction = ""
+        if os.path.exists(framework_index_path):
+            with open(framework_index_path, "r", encoding="utf-8") as f:
+                framework_instruction = f.read()
+
+        # == Execution Loop (Exec -> QA -> Defect -> Exec) ==
+        loop_count = 0
+        max_loops = 3 # Prevent infinite defect loops
+        
+        while loop_count < max_loops:
+            loop_count += 1
+            log(f"\n=== SPRINT CYCLE {loop_count} ===")
+            
+            # 1. Execute Pending
+            tasks_run = await run_parallel_execution(
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+            )
+            
+            # 2. QA
+            defects_found = await run_qa_phase(
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+            )
+            
+            if defects_found:
+                log("    [!] Defects found. Rerunning execution phase for new tasks...")
+                continue
+            else:
+                if tasks_run == 0 and loop_count > 1:
+                    break
+                    
+                if defects_found is False:
+                     log("    [+] QA passed. Proceeding to Demo.")
+                     break
+                
+        if loop_count >= max_loops:
+            log("WARNING: Max sprint cycles reached. Proceeding to Retro despite potential issues.")
+
+        # 3. Demo
+        feedback = await run_demo_phase(
+            self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback
+        )
+        
+        # 4. Retro
+        await run_retro_phase(
+            self.session_service, framework_instruction, latest_sprint, feedback, self.agent_factory
+        )
+        
+        log("\n[*] Mission execution complete.")
+
+# --- Main Entry Point ---
+async def main():
+    runner = SprintRunner()
+    await runner.run_cycle()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        # In production, logging to file is good, simplified here for now.
+        log(f"CRITICAL ERROR: {e}")
+        traceback.print_exc()

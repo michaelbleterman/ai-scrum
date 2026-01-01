@@ -1,8 +1,51 @@
 import os
 import re
 import subprocess
+import logging
+import functools
 from google.adk.tools import FunctionTool
 
+# --- Tool Logging Decorator ---
+def log_tool_usage(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        logger = logging.getLogger("SprintRunner")
+        try:
+            logger.info(f"[Tool] Invoking {func.__name__}")
+            result = func(*args, **kwargs)
+            # Truncate result for logging if too long
+            str_res = str(result)
+            str_res = str_res.encode('ascii', 'replace').decode('ascii')
+            log_res = str_res if len(str_res) < 500 else str_res[:500] + "...(truncated)"
+            logger.info(f"[Tool] {func.__name__} returned: {log_res}")
+            for h in logger.handlers: h.flush()
+            return result
+        except Exception as e:
+            logger.error(f"[Tool] {func.__name__} FAILED: {e}")
+            raise e
+    return wrapper
+
+# Async wrapper for async tools
+def log_async_tool_usage(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        logger = logging.getLogger("SprintRunner")
+        try:
+            logger.info(f"[Tool] Invoking {func.__name__}")
+            result = await func(*args, **kwargs)
+            # Sanitize result for logging
+            str_res = str(result)
+            str_res = str_res.encode('ascii', 'replace').decode('ascii')
+            log_res = str_res if len(str_res) < 500 else str_res[:500] + "...(truncated)"
+            logger.info(f"[Tool] {func.__name__} returned: {log_res}")
+            for h in logger.handlers: h.flush()
+            return result
+        except Exception as e:
+            logger.error(f"[Tool] {func.__name__} FAILED: {e}")
+            raise e
+    return wrapper
+
+@log_tool_usage
 def list_dir(path: str = "."):
     """Lists files and directories in the specified path."""
     try:
@@ -10,6 +53,7 @@ def list_dir(path: str = "."):
     except Exception as e:
         return f"Error: {e}"
 
+@log_tool_usage
 def read_file(path: str):
     """Reads the content of a file."""
     try:
@@ -18,6 +62,7 @@ def read_file(path: str):
     except Exception as e:
         return f"Error: {e}"
 
+@log_tool_usage
 def write_file(path: str, content: str):
     """Writes content to a file."""
     try:
@@ -28,13 +73,15 @@ def write_file(path: str, content: str):
     except Exception as e:
         return f"Error: {e}"
 
+@log_tool_usage
 def run_command(command: str):
     """Executes a shell command and returns the output."""
     try:
         # PAGER=cat to avoid hanging on long output
         env = os.environ.copy()
         env["PAGER"] = "cat"
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env)
+        # Timeout added to prevent hangs
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env, timeout=30)
         return {
             "stdout": result.stdout,
             "stderr": result.stderr,
@@ -43,6 +90,7 @@ def run_command(command: str):
     except Exception as e:
         return f"Error: {e}"
 
+@log_async_tool_usage
 async def update_sprint_task_status(task_description: str, status: str = "[x]", sprint_dir: str = "project_tracking"):
     """
     Updates the status of a specific task in the latest sprint file.
@@ -94,6 +142,67 @@ async def update_sprint_task_status(task_description: str, status: str = "[x]", 
     except Exception as e:
         return f"Error updating sprint file: {e}"
 
+@log_async_tool_usage
+async def add_sprint_task(role: str, task_description: str, sprint_dir: str = "project_tracking"):
+    """
+    Adds a new task to the latest sprint file under the specified role section.
+    Args:
+        role (str): The role section to add to (e.g., "Backend", "Frontend").
+        task_description (str): The description of the new task.
+        sprint_dir (str): Directory containing sprint files.
+    """
+    # Fix for path
+    if not os.path.isabs(sprint_dir):
+         sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
+
+    if not os.path.exists(sprint_dir):
+        parent_sprint_dir = os.path.join(os.path.dirname(os.getcwd()), "project_tracking")
+        if os.path.exists(parent_sprint_dir):
+            sprint_dir = parent_sprint_dir
+        else:
+             return f"Error: Sprint directory '{sprint_dir}' not found."
+
+    sprint_files = [f for f in os.listdir(sprint_dir) if f.startswith("SPRINT_") and f.endswith(".md")]
+    if not sprint_files:
+        return "Error: No sprint files found."
+    
+    sprint_files.sort()
+    latest_sprint = os.path.join(sprint_dir, sprint_files[-1])
+    
+    try:
+        with open(latest_sprint, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        updated_lines = []
+        role_found = False
+        
+        # Simple heuristic: Find header "### ... @Role ..." and verify we are in that block
+        # Or just append to end if not found? 
+        # Safer: Find the section header.
+        
+        for i, line in enumerate(lines):
+            updated_lines.append(line)
+            # Check if this line is the header for the role
+            # Flexible match: "### @Backend" or "### Backend"
+            if f"@{role}" in line and "###" in line:
+                role_found = True
+                # Insert the task after the header
+                updated_lines.append(f"- [ ] {task_description}\n")
+        
+        if not role_found:
+            # If role not found, append a new section at the end
+            updated_lines.append(f"\n### {role} Tasks\n")
+            updated_lines.append(f"- [ ] {task_description}\n")
+
+        with open(latest_sprint, "w", encoding="utf-8") as f:
+            f.writelines(updated_lines)
+            
+        return f"Successfully added task to {latest_sprint}"
+
+    except Exception as e:
+        return f"Error adding task: {e}"
+
+@log_tool_usage
 def search_codebase(pattern: str, root_dir: str = "."):
     """
     Recursively searches for a regex pattern in files within the root_dir.
@@ -137,3 +246,5 @@ worker_tools = [
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]
+
+qa_tools = worker_tools + [FunctionTool(add_sprint_task)]
