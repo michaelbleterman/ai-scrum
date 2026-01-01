@@ -4,14 +4,14 @@ This repository contains the framework for running autonomous AI agent sprints.
 
 ## Structure
 
-- `scripts/`: Python scripts and modules.
-    - `parallel_sprint_runner.py`: Main entry point.
-    - `sprint_config.py`: Configuration management.
-    - `sprint_tools.py`: Tools for agents.
-    - `sprint_utils.py`: Utility functions.
-- `tests/`: Unit tests.
-- `prompts/`: Agent prompt definitions.
-- `project_tracking/`: Sprint logs and backlog.
+- `scripts/`: Core Python modules for the sprint runner.
+    - `parallel_sprint_runner.py`: Main entry point for executing sprints.
+    - `sprint_config.py`: Configuration management (loads from .env).
+    - `sprint_tools.py`: Tools available to AI agents during execution.
+    - `sprint_utils.py`: Utility functions for parsing sprint files.
+- `tests/`: Test suite including E2E tests.
+- `prompts/`: Agent prompt definitions and instructions.
+- `project_tracking/`: **Generated during test execution** - Contains sprint logs, backlog, and artifacts.
 
 ## Setup
 
@@ -47,15 +47,22 @@ python -m unittest discover tests/
 
 ### End-to-End (E2E) Test Suite
 
-Run the full lifecycle E2E test (mocks user and agents):
+Run the full lifecycle E2E test:
 
 ```bash
-python -m unittest tests/test_e2e_real.py
+python tests/test_e2e_real.py
 ```
 
-This test simulates:
-1.  **Parallel Execution**: Agents create tasks.
-2.  **QA Phase**: QA Agent detects a defect.
-3.  **Defect Loop**: Backend Agent fixes the defect.
-4.  **Verification**: QA Agent passes the fix.
-5.  **Demo & Retro**: Orchestrator generates reports.
+This test validates the complete sprint cycle:
+1.  **Parallel Execution**: Multiple agents work on tasks concurrently.
+2.  **QA Phase**: QA Agent verifies deliverables and detects defects.
+3.  **Defect Resolution Loop**: Backend Agent fixes detected issues.
+4.  **Re-verification**: QA Agent confirms fixes.
+5.  **Demo & Retrospective**: Final reporting and documentation.
+
+**Key Assertions**:
+- All sprint tasks marked as complete (`[x]`)
+- QA Report contains "PASSED" status
+- Retrospective and backlog files generated
+- Code defects resolved correctly
+- Exit code 0 (CI-compatible)

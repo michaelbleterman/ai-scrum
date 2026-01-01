@@ -35,13 +35,20 @@ def parse_sprint_tasks(sprint_file_path: str):
         lines = section.split("\n")
         header = lines[0]
         # Identify roles in the header (e.g., @Backend @Security)
+                # Identify roles in the header (e.g., @Backend @Security)
         roles = re.findall(r"@(\w+)", header)
         if not roles:
-            continue
+            # Fallback: try to identify role from "### Backend Tasks"
+            header_role = re.search(r"###\s+(\w+)", header)
+            if header_role:
+                roles = [header_role.group(1)]
+            else:
+                continue
 
         for line in lines[1:]:
-            # Match todo items: - [ ] Task description
-            match = re.search(r"- \[ \] (.*)", line)
+            # Match todo items: - [ ] Task description OR - [/] Task description (resume)
+            # We want to pick up [/] tasks if the runner restarted/crashed.
+            match = re.search(r"- \[[ /]\] (.*)", line)
             if match:
                 desc = match.group(1).strip()
                 # For simplicity, assign to the first role mentioned in the section

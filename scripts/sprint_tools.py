@@ -77,6 +77,16 @@ def write_file(path: str, content: str):
 def run_command(command: str):
     """Executes a shell command and returns the output."""
     try:
+        # Helper to fix common cross-platform command issues
+        if "mkdir -p" in command:
+            # On Windows, 'mkdir' creates intermediates by default (in cmd) but 'mkdir -p' fails.
+            # In PowerShell 'mkdir' is a function 'md'.
+            # We can strip '-p'.
+            command = command.replace("mkdir -p", "mkdir")
+            
+        logger = logging.getLogger("SprintRunner")
+        logger.info(f"[Tool:run_command] Executing: {command}")
+        
         # PAGER=cat to avoid hanging on long output
         env = os.environ.copy()
         env["PAGER"] = "cat"

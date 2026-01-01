@@ -93,7 +93,13 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                 tools=worker_tools
             )
 
-            worker_pid = f"worker_{task_index}"
+            # Make session ID unique per cycle or delete previous?
+            # Easiest: append random or cycle index if passed.
+            # But run_parallel_execution doesn't know cycle count?
+            # Actually, we can check if session exists.
+            # But simpler: use random suffix or just handle the error.
+            # Better: Pass cycle_index to run_parallel_execution.
+            worker_pid = f"worker_{task_index}_{os.urandom(4).hex()}" 
             await session_service.create_session(
                 app_name="SprintRunner", 
                 user_id="user", 
@@ -183,10 +189,11 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
         tools=qa_tools
     )
 
+    qa_pid = f"qa_session_{os.urandom(4).hex()}"
     await session_service.create_session(
         app_name="SprintRunner", 
         user_id="user", 
-        session_id="qa_session"
+        session_id=qa_pid
     )
     runner = Runner(
         app_name="SprintRunner", 
@@ -201,7 +208,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
         nonlocal defects_created
         async for event in runner.run_async(
             user_id="user", 
-            session_id="qa_session", 
+            session_id=qa_pid, 
             new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
         ):
              if event.content and event.content.parts:
@@ -404,7 +411,23 @@ class SprintRunner:
 # --- Main Entry Point ---
 async def main():
     runner = SprintRunner()
-    await runner.run_cycle()
+    try:
+        await runner.run_cycle()
+    except asyncio.CancelledError:
+        log("Execution cancelled.")
+    except Exception as e:
+        log(f"Execution failed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Assuming SessionService has a close method, or we rely on context managers.
+        # But SessionService instance is created in __init__.
+        # We should try to close it if possible.
+        # Looking at imported libs, SessionService likely uses a client.
+        # If no explicit close, we just ensure we catch the cancel.
+        pass
+
+
 
 if __name__ == "__main__":
     try:

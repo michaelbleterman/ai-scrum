@@ -6,7 +6,9 @@ import shutil
 import time
 
 # Fix Import Path
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(base_dir)
+sys.path.append(os.path.join(base_dir, "scripts"))
 
 from google.adk.agents import LlmAgent
 from scripts.parallel_sprint_runner import SprintRunner
@@ -18,6 +20,13 @@ class TestE2EReal(unittest.TestCase):
     TEST_SPRINT_FILE = os.path.join(SPRINT_DIR, "SPRINT_E2E.md")
     
     def setUp(self):
+        # Ensure the sprint directory exists
+        if not os.path.exists(self.SPRINT_DIR):
+            os.makedirs(self.SPRINT_DIR)
+            # Create __init__.py to make it a package
+            with open(os.path.join(self.SPRINT_DIR, "__init__.py"), "w") as f:
+                f.write("")
+        
         # Clean up previous artifacts
         for f in ["QA_REPORT.md", "DEMO_WALKTHROUGH.md", "SPRINT_REPORT.md", "dummy_math.py"]:
             path = os.path.join(self.SPRINT_DIR, f)
@@ -42,6 +51,7 @@ class TestE2EReal(unittest.TestCase):
 - [ ] Create `project_tracking/dummy_ui.txt` with text "Hello World".
 """)
 
+
     def test_full_lifecycle(self):
         print("\n\n=== STARTING E2E TEST ===")
         
@@ -59,15 +69,26 @@ class TestE2EReal(unittest.TestCase):
 
         runner = SprintRunner(agent_factory=agent_factory, input_callback=mock_input)
         
-        # Run the cycle
-        asyncio.run(runner.run_cycle())
+        # Run the cycle with exit code handling
+        try:
+            asyncio.run(runner.run_cycle())
+        except asyncio.CancelledError:
+            print("[Test] Execution cancelled gracefully.")
+        except Exception as e:
+            self.fail(f"Execution failed with exception: {e}")
         
         # --- VALIDATION ---
         
         # 1. Check Files Exists
-        self.assertTrue(os.path.exists(os.path.join(self.SPRINT_DIR, "QA_REPORT.md")), "QA Report missing")
-        self.assertTrue(os.path.exists(os.path.join(self.SPRINT_DIR, "DEMO_WALKTHROUGH.md")), "Demo Walkthrough missing")
-        self.assertTrue(os.path.exists(os.path.join(self.SPRINT_DIR, "SPRINT_REPORT.md")), "Sprint Report missing")
+        qa_report_path = os.path.join(self.SPRINT_DIR, "QA_REPORT.md")
+        demo_path = os.path.join(self.SPRINT_DIR, "DEMO_WALKTHROUGH.md")
+        retro_path = os.path.join(self.SPRINT_DIR, "SPRINT_REPORT.md")
+        backlog_path = os.path.join(self.SPRINT_DIR, "backlog.md")
+        
+        self.assertTrue(os.path.exists(qa_report_path), "QA Report missing")
+        self.assertTrue(os.path.exists(demo_path), "Demo Walkthrough missing")
+        self.assertTrue(os.path.exists(retro_path), "Sprint Report missing")
+        self.assertTrue(os.path.exists(backlog_path), "Backlog missing")
         
         # 2. Check Defect was Created and Resolved
         with open(self.TEST_SPRINT_FILE, "r") as f:
@@ -75,7 +96,28 @@ class TestE2EReal(unittest.TestCase):
             self.assertIn("DEFECT", content, "No DEFECT task created by QA")
             self.assertIn("- [x] DEFECT", content, "DEFECT task was not resolved")
             
-        # 3. Check Code Fix (dummy_math.py should have been fixed to return a + b)
+            # Assert Task Count / Status
+            # We expect at least one original task per role and one defect.
+            # And ALL must be [x]
+            self.assertFalse("- [ ]" in content, "Found incomplete tasks [ ] in sprint file")
+            self.assertFalse("- [/]" in content, "Found in-progress tasks [/] in sprint file")
+            
+        # 3. Check QA Report Content
+        with open(qa_report_path, "r", encoding="utf-8") as f:
+            qa_content = f.read()
+            self.assertIn("PASSED", qa_content, "QA Report does not contain 'PASSED'")
+            
+        # 4. Check Retro Content
+        with open(retro_path, "r", encoding="utf-8") as f:
+            retro_content = f.read()
+            self.assertIn("Retrospective", retro_content, "Sprint Report missing Retrospective section")
+
+        # 5. Check Backlog Integrity
+        with open(backlog_path, "r", encoding="utf-8") as f:
+            backlog_content = f.read()
+            self.assertTrue(len(backlog_content) > 10, "Backlog seems empty")
+            
+        # 6. Check Code Fix (dummy_math.py should have been fixed to return a + b)
         math_path = os.path.join(self.SPRINT_DIR, "dummy_math.py")
         if os.path.exists(math_path):
             with open(math_path, "r") as f:

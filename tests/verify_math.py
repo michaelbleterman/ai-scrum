@@ -1,19 +1,18 @@
-
 import sys
 import os
 
-# Add project_tracking to path to import dummy_math
+# Add the current directory to sys.path so we can import project_tracking
 sys.path.append(os.getcwd())
+
 from project_tracking.dummy_math import add
 
-def test_add():
-    result = add(2, 2)
-    expected = 4
-    if result != expected:
-        print(f"FAILED: add(2, 2) returned {result}, expected {expected}")
-        sys.exit(1)
+try:
+    result = add(2, 3)
+    if result == 5:
+        print("VERIFICATION SUCCESS: add(2, 3) == 5")
     else:
-        print("PASSED: add(2, 2) returned 4")
-
-if __name__ == "__main__":
-    test_add()
+        print(f"VERIFICATION FAILURE: add(2, 3) returned {result}, expected 5")
+        sys.exit(1)
+except Exception as e:
+    print(f"VERIFICATION ERROR: {e}")
+    sys.exit(1)
