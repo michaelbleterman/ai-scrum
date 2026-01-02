@@ -39,6 +39,9 @@ class TestE2EReal(unittest.TestCase):
             with open(backlog_path, "w") as f:
                 f.write("# Backlog\n")
 
+        # Set CWD to BASE_DIR so agents write to the test environment
+        os.chdir(self.BASE_DIR)
+
         # Create E2E Sprint with INTENTIONAL DEFECT
         with open(self.TEST_SPRINT_FILE, "w", encoding="utf-8") as f:
             f.write("""# Sprint E2E
