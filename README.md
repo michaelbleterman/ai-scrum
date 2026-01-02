@@ -185,14 +185,42 @@ python C:\Users\Michael\.gemini\.agent\scripts\parallel_sprint_runner.py `
 
 ## Configuration
 
-Environment variables (in `.env`):
+### Environment Variables
+
+Create a `.env` file in your **project directory** (or in `scripts/`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GOOGLE_API_KEY` | (required) | Google Gemini API key |
-| `MODEL_NAME` | `gemini-3-flash-preview` | LLM model to use |
+| `MODEL_NAME` | `gemini-2.5-flash` | Default LLM model (fallback) |
 | `CONCURRENCY_LIMIT` | `3` | Max parallel agents |
 | `PROMPT_BASE_DIR` | `.agent/prompts` | Agent prompt directory (shared) |
+
+### Agent-Specific Models (Optional)
+
+The framework automatically selects optimal models for each agent type based on their complexity. You can override these defaults:
+
+| Variable | Default Model | Agent Type |
+|----------|---------------|------------|
+| `MODEL_ORCHESTRATOR` | `gemini-2.5-pro` | Orchestrator (workflow coordination) |
+| `MODEL_QA` | `gemini-2.5-pro` | QA Engineer (comprehensive testing) |
+| `MODEL_BACKEND` | `gemini-2.5-flash` | Backend Developer |
+| `MODEL_FRONTEND` | `gemini-2.5-flash` | Frontend Developer |
+| `MODEL_DEVOPS` | `gemini-2.5-flash` | DevOps Engineer |
+| `MODEL_SECURITY` | `gemini-2.5-flash` | Security Engineer |
+| `MODEL_PM` | `gemini-2.5-flash` | Product Manager |
+
+**Example `.env`:**
+```env
+GOOGLE_API_KEY=your_google_api_key_here
+MODEL_NAME=gemini-2.5-flash
+
+# Optional: Override specific agent models
+MODEL_ORCHESTRATOR=gemini-3-pro
+MODEL_QA=gemini-2.5-flash
+```
+
+See [`MODEL_SELECTION.md`](MODEL_SELECTION.md) for detailed model capabilities, pricing, and optimization strategies.
 
 **Note**: `SPRINT_DIR` is now dynamically set based on `--project-root` or current directory.
 

@@ -65,11 +65,14 @@ class TestE2EReal(unittest.TestCase):
             print(f"[Test Input] {prompt} returning 'Great demo!'")
             return "Great demo!"
 
-        # Agent factory (optional, can simulate stronger models if needed)
-        def agent_factory(name, instruction, tools, model=None):
+        # Agent factory compatible with new signature
+        def agent_factory(name, instruction, tools, model=None, agent_role=None):
+            # Use role-based model selection if available
             if model is None:
-                model = SprintConfig.MODEL_NAME
-            # Pass through real agents
+                if agent_role:
+                    model = SprintConfig.get_model_for_agent(agent_role)
+                else:
+                    model = SprintConfig.MODEL_NAME
             return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
         runner = SprintRunner(agent_factory=agent_factory, input_callback=mock_input)

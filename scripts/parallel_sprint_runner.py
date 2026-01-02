@@ -44,9 +44,23 @@ def log(msg):
 def retry_decorator(func):
     return func
 
-def default_agent_factory(name, instruction, tools, model=None):
+def default_agent_factory(name, instruction, tools, model=None, agent_role=None):
+    """
+    Create an LLM agent with optimal model selection.
+    
+    Args:
+        name: Agent instance name
+        instruction: Agent system prompt
+        tools: Available tools for the agent
+        model: Optional explicit model override
+        agent_role: Agent role/type for automatic model selection (e.g., 'Backend', 'QA', 'Orchestrator')
+    """
     if model is None:
-        model = SprintConfig.MODEL_NAME
+        # Determine model based on agent role/name
+        identifier = agent_role if agent_role else name
+        model = SprintConfig.get_model_for_agent(identifier)
+    
+    logger.info(f"Creating agent '{name}' (role: {agent_role or 'unknown'}) with model: {model}")
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
@@ -91,7 +105,8 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
             agent = agent_factory(
                 name=agent_name,
                 instruction=full_instruction,
-                tools=worker_tools
+                tools=worker_tools,
+                agent_role=role  # Pass role for optimal model selection
             )
 
             # Make session ID unique per cycle or delete previous?
@@ -187,7 +202,8 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     qa_agent = agent_factory(
         name="QA_Engineer",
         instruction=qa_full_instruction,
-        tools=qa_tools
+        tools=qa_tools,
+        agent_role="QA"  # Use Pro model for comprehensive testing
     )
 
     qa_pid = f"qa_session_{os.urandom(4).hex()}"
@@ -240,7 +256,8 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
                     "1. Read the 'project_tracking/QA_REPORT.md'.\n"
                     "2. Read the latest sprint file.\n"
                     "3. Generate a 'project_tracking/DEMO_WALKTHROUGH.md' summarizing what was built and how to use it.\n",
-        tools=worker_tools 
+        tools=worker_tools,
+        agent_role="Orchestrator"  # Use Pro model for coordination
     )
     
     await session_service.create_session(
@@ -315,7 +332,8 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     pm_agent = agent_factory(
         name="ProductManager",
         instruction=pm_full_instruction,
-        tools=worker_tools
+        tools=worker_tools,
+        agent_role="PM"  # Use Flash model for quality requirements
     )
     
     await session_service.create_session(

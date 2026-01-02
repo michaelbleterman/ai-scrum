@@ -46,6 +46,49 @@ class SprintConfig:
              print("WARNING: GOOGLE_API_KEY not found in environment.")
 
     @classmethod
+    def get_model_for_agent(cls, agent_name):
+        """
+        Get the optimal model for a specific agent based on their role.
+        
+        Args:
+            agent_name: Name or role of the agent (e.g., 'orchestrator', 'Backend', 'QA_Engineer')
+            
+        Returns:
+            str: Model name to use for this agent
+            
+        Environment Variable Overrides:
+            MODEL_ORCHESTRATOR, MODEL_QA, MODEL_BACKEND, MODEL_FRONTEND,
+            MODEL_DEVOPS, MODEL_SECURITY, MODEL_PM
+        """
+        # Check for agent-specific env override first
+        env_key = f"MODEL_{agent_name.upper()}"
+        env_override = os.getenv(env_key)
+        if env_override:
+            return env_override
+        
+        # Model mapping based on agent complexity and requirements
+        model_mapping = {
+            # High complexity - need advanced reasoning
+            "orchestrator": os.getenv("MODEL_ORCHESTRATOR", "gemini-2.5-pro"),
+            "qa_engineer": os.getenv("MODEL_QA", "gemini-2.5-pro"),
+            "qa": os.getenv("MODEL_QA", "gemini-2.5-pro"),
+            
+            # Medium-high complexity - balanced performance
+            "backend": os.getenv("MODEL_BACKEND", "gemini-2.5-flash"),
+            "frontend": os.getenv("MODEL_FRONTEND", "gemini-2.5-flash"),
+            "devops": os.getenv("MODEL_DEVOPS", "gemini-2.5-flash"),
+            "security": os.getenv("MODEL_SECURITY", "gemini-2.5-flash"),
+            "productmanager": os.getenv("MODEL_PM", "gemini-2.5-flash"),
+            "pm": os.getenv("MODEL_PM", "gemini-2.5-flash"),
+        }
+        
+        # Normalize agent name: lowercase, remove spaces and underscores
+        normalized = agent_name.lower().replace(" ", "").replace("_", "")
+        
+        # Return matched model or fall back to global default
+        return model_mapping.get(normalized, cls.MODEL_NAME)
+
+    @classmethod
     def get_role_map(cls):
         return {
             "Backend": "agent_backend.md",
