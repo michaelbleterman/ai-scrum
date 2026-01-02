@@ -240,4 +240,9 @@ See [`MODEL_SELECTION.md`](MODEL_SELECTION.md) for detailed model capabilities, 
 
 ## Contributing
 
-See the [prompts/](prompts/) directory to customize agent behaviors or add new specialized agents.
+
+## Recent Updates (Sprint Tasks Parser)
+- **`scripts/sprint_utils.py`**: Updated task parsing logic to support **inline role assignments** (e.g., `- [ ] @Role: Task`). This allows for more flexible sprint file formatting.
+- **Tests**:
+    - Updated `tests/test_sprint_utils.py` to verify inline role parsing.
+    - Patched `tests/test_e2e_real.py` to ensure robust path handling during test execution (fixing `CWD` mismatches).

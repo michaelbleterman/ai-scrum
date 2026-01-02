@@ -30,5 +30,17 @@ class TestSprintUtils(unittest.TestCase):
         self.assertEqual(tasks[1]['role'], 'Frontend')
         self.assertEqual(tasks[1]['desc'], 'Task 3')
 
+    @patch('os.path.exists')
+    @patch('builtins.open', new_callable=mock_open, read_data="### Epic 1\n- [ ] @DevOps: Task A\n- [ ] @Backend Task B")
+    def test_parse_sprint_tasks_inline(self, mock_file, mock_exists):
+        mock_exists.return_value = True
+        tasks = sprint_utils.parse_sprint_tasks("SPRINT_Y.md")
+        
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0]['role'], 'DevOps')
+        self.assertEqual(tasks[0]['desc'], 'Task A')
+        self.assertEqual(tasks[1]['role'], 'Backend')
+        self.assertEqual(tasks[1]['desc'], 'Task B')
+
 if __name__ == '__main__':
     unittest.main()
