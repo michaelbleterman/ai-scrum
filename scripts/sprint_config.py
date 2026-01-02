@@ -18,7 +18,26 @@ class SprintConfig:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     PARENT_DIR = os.path.dirname(BASE_DIR)
     PROMPT_BASE_DIR = os.getenv("PROMPT_BASE_DIR", os.path.join(PARENT_DIR, "prompts"))
-    SPRINT_DIR = os.getenv("SPRINT_DIR", os.path.join(PARENT_DIR, "project_tracking"))
+    
+    # Project Root - can be set dynamically at runtime
+    PROJECT_ROOT = None
+    
+    # Sprint Directory - defaults to CWD/project_tracking if PROJECT_ROOT not set
+    SPRINT_DIR = None
+    
+    @classmethod
+    def set_project_root(cls, project_root):
+        """Set the project root directory dynamically."""
+        cls.PROJECT_ROOT = os.path.abspath(project_root)
+        cls.SPRINT_DIR = os.path.join(cls.PROJECT_ROOT, "project_tracking")
+    
+    @classmethod
+    def get_sprint_dir(cls):
+        """Get the sprint directory, using PROJECT_ROOT or falling back to env/default."""
+        if cls.SPRINT_DIR:
+            return cls.SPRINT_DIR
+        # Fallback to environment variable or default
+        return os.getenv("SPRINT_DIR", os.path.join(cls.PARENT_DIR, "project_tracking"))
     
     @classmethod
     def validate(cls):

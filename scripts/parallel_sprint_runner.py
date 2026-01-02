@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import re
@@ -72,7 +73,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
             
             # DIRECT UPDATE: Mark in-progress
             try:
-                await update_sprint_task_status(desc, "[/]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[/]", SprintConfig.get_sprint_dir())
             except Exception as e:
                 log(f"    [Update Error] Failed to mark in-progress: {e}")
 
@@ -142,12 +143,12 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                 await run_agent()
                 log(f"    [Task {task_index+1}] Completed @{role_raw}")
                 # DIRECT UPDATE: Mark done
-                await update_sprint_task_status(desc, "[x]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
 
             except Exception as e:
                 log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
                 # DIRECT UPDATE: Mark blocked
-                await update_sprint_task_status(desc, "[!]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
 
     tasks = [run_single_task(task, idx) for idx, task in enumerate(tasks_to_execute)]
     await asyncio.gather(*tasks)
@@ -350,9 +351,10 @@ class SprintRunner:
     async def run_cycle(self):
         SprintConfig.validate()
         
-        latest_sprint = detect_latest_sprint_file(SprintConfig.SPRINT_DIR)
+        sprint_dir = SprintConfig.get_sprint_dir()
+        latest_sprint = detect_latest_sprint_file(sprint_dir)
         if not latest_sprint:
-            log(f"No sprint files found in {SprintConfig.SPRINT_DIR}")
+            log(f"No sprint files found in {sprint_dir}")
             return
         
         log(f"[*] Starting Sprint Runner for {latest_sprint}")
@@ -409,7 +411,16 @@ class SprintRunner:
         log("\n[*] Mission execution complete.")
 
 # --- Main Entry Point ---
-async def main():
+async def main(project_root=None):
+    # Set project root if provided, otherwise default to CWD
+    if project_root:
+        SprintConfig.set_project_root(project_root)
+    else:
+        SprintConfig.set_project_root(os.getcwd())
+    
+    log(f"Project root: {SprintConfig.PROJECT_ROOT}")
+    log(f"Sprint directory: {SprintConfig.get_sprint_dir()}")
+    
     runner = SprintRunner()
     try:
         await runner.run_cycle()
@@ -430,8 +441,17 @@ async def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run AI Sprint Runner")
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default=None,
+        help="Project root directory (defaults to current working directory)"
+    )
+    args = parser.parse_args()
+    
     try:
-        asyncio.run(main())
+        asyncio.run(main(project_root=args.project_root))
     except Exception as e:
         log(f"CRITICAL ERROR: {e}")
         traceback.print_exc()

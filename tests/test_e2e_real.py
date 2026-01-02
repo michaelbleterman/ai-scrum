@@ -55,6 +55,11 @@ class TestE2EReal(unittest.TestCase):
     def test_full_lifecycle(self):
         print("\n\n=== STARTING E2E TEST ===")
         
+        # Set project root to BASE_DIR so it uses the .agent/project_tracking folder
+        SprintConfig.set_project_root(self.BASE_DIR)
+        print(f"[Test] Project root set to: {SprintConfig.PROJECT_ROOT}")
+        print(f"[Test] Sprint directory: {SprintConfig.get_sprint_dir()}")
+        
         # Custom input callback for Demo phase
         def mock_input(prompt):
             print(f"[Test Input] {prompt} returning 'Great demo!'")
