@@ -224,7 +224,10 @@ def search_codebase(pattern: str, root_dir: str = "."):
     Ignores .git, __pycache__, and other common ignore dirs.
     """
     results = []
-    ignore_dirs = {".git", "__pycache__", ".venv", "node_modules", "dist", "build"}
+    ignore_dirs = {
+        ".git", "__pycache__", ".venv", "node_modules", "dist", "build", "logs", 
+        ".idea", ".vscode", "coverage", ".pytest_cache", "target", "bin", "obj"
+    }
     
     try:
         regex = re.compile(pattern)
@@ -233,6 +236,9 @@ def search_codebase(pattern: str, root_dir: str = "."):
             dirs[:] = [d for d in dirs if d not in ignore_dirs]
             
             for file in files:
+                if file.endswith((".log", ".lock", ".map", ".min.js", ".min.css", ".svg")):
+                    continue
+                    
                 file_path = os.path.join(root, file)
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:

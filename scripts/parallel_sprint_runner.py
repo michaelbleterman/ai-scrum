@@ -131,129 +131,160 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
     log(f"    Found {len(tasks_to_execute)} tasks to execute: {status_counts['todo']} Todo, {status_counts['in_progress']} In-Progress, {status_counts['blocked']} Blocked")
     
     concurrency_limit = SprintConfig.CONCURRENCY_LIMIT
-    sem = asyncio.Semaphore(concurrency_limit)
     role_map = SprintConfig.get_role_map()
-
-    async def run_single_task(task_info, task_index):
-        async with sem:
-            role_raw = task_info["role"]
-            role = role_raw.lower()
-            desc = task_info["desc"]
-            status = task_info["status"]
-            blocker_reason = task_info.get("blocker_reason")
-            
-            status_label = status.upper().replace('_', '-')
-            log(f"\n    [Task {task_index+1}] Starting @{role_raw} [{status_label}]: {desc}")
-            
-            # DIRECT UPDATE: Mark in-progress
+    
+    # Create a Queue and populate it
+    queue = asyncio.Queue()
+    for idx, task in enumerate(tasks_to_execute):
+        await queue.put((idx, task))
+        
+    async def worker(worker_id):
+        while True:
             try:
-                await update_sprint_task_status(desc, "[/]", SprintConfig.get_sprint_dir())
+                # Get a "unit of work" from the queue.
+                task_index, task_info = await queue.get()
+                
+                try:
+                    role_raw = task_info["role"]
+                    role = role_raw.lower()
+                    desc = task_info["desc"]
+                    status = task_info["status"]
+                    blocker_reason = task_info.get("blocker_reason")
+                    
+                    status_label = status.upper().replace('_', '-')
+                    log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Starting @{role_raw} [{status_label}]: {desc}")
+                    
+                    # DIRECT UPDATE: Mark in-progress
+                    try:
+                        await update_sprint_task_status(desc, "[/]", SprintConfig.get_sprint_dir())
+                    except Exception as e:
+                        log(f"    [Update Error] Failed to mark in-progress: {e}")
+
+                    prompt_file = role_map.get(role_raw, "agent_orchestrator.md")
+                    prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, prompt_file)
+                    if os.path.exists(prompt_path):
+                        with open(prompt_path, "r", encoding="utf-8") as f:
+                            instruction = f.read()
+                    else:
+                        instruction = f"Act as {role}."
+
+                    agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n\nTask: {desc}"
+                    
+                    # Add status-specific instructions
+                    if status == "in_progress":
+                        resume_instruction = (
+                            "\n\n=== RESUME NOTICE ===\n"
+                            "This task is marked as IN_PROGRESS from a previous session.\n"
+                            "Search for existing files, code, or partial work in the workspace before starting.\n"
+                            "Resume where it left off if possible. Review any existing implementation.\n"
+                            "==================="
+                        )
+                        full_instruction += resume_instruction
+                        log(f"    [Task {task_index+1}] Adding RESUME instruction")
+                    
+                    elif status == "blocked":
+                        unblock_instruction = (
+                            "\n\n=== UNBLOCK NOTICE ===\n"
+                            "This task was previously BLOCKED.\n"
+                        )
+                        if blocker_reason:
+                            unblock_instruction += f"Previous blocker: {blocker_reason}\n"
+                        unblock_instruction += (
+                            "Investigate the root cause, check logs, verify dependencies, and attempt to resolve the blocker.\n"
+                            "If still blocked after investigation, document the reason clearly in your response.\n"
+                            "======================"
+                        )
+                        full_instruction += unblock_instruction
+                        log(f"    [Task {task_index+1}] Adding UNBLOCK instruction" + (f" (Reason: {blocker_reason})" if blocker_reason else ""))
+                    
+                    agent = agent_factory(
+                        name=agent_name,
+                        instruction=full_instruction,
+                        tools=worker_tools,
+                        agent_role=role  # Pass role for optimal model selection
+                    )
+
+                    worker_pid = f"worker_{task_index}_{os.urandom(4).hex()}" 
+                    await session_service.create_session(
+                        app_name="SprintRunner", 
+                        user_id="user", 
+                        session_id=worker_pid
+                    )
+                    runner = Runner(
+                        app_name="SprintRunner", 
+                        agent=agent, 
+                        session_service=session_service
+                    )
+
+                    @retry_decorator
+                    async def run_agent():
+                        turn_count = 0
+                        max_turns = 20
+                        async for event in runner.run_async(
+                            user_id="user", 
+                            session_id=worker_pid, 
+                            new_message=types.Content(parts=[types.Part(text=f"Execute this task: {desc}")])
+                        ):
+                            turn_count += 1
+                            if turn_count > max_turns:
+                                msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
+                                logger.error(msg)
+                                print(msg) # Print to stdout for test capture
+                                break
+
+                            if event.content and event.content.parts:
+                                for part in event.content.parts:
+                                    if part.text:
+                                        msg = f"[Agent {role_raw}] Thought: {part.text}"
+                                        logger.info(msg)
+                                        print(msg)
+                                    if getattr(part, 'function_call', None):
+                                        msg = f"[Agent {role_raw}] Call: {part.function_call.name}({part.function_call.args})"
+                                        logger.info(msg)
+                                        print(msg)
+
+                    try:
+                        await run_agent()
+                        log(f"    [Task {task_index+1}] Completed @{role_raw}")
+                        # DIRECT UPDATE: Mark done
+                        await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
+
+                    except Exception as e:
+                        log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                        # Mark as blocked if it fails
+                        await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
+                
+                finally:
+                    # Notify the queue that the "unit of work" is complete
+                    queue.task_done()
+            
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                log(f"    [Update Error] Failed to mark in-progress: {e}")
+                log(f"Worker {worker_id} crashed: {e}")
+                # Don't let a worker crash kill the whole thing, unless we want it to.
+                # But we should probably restart it or just let it die if we have others.
+                # For now, just log and continue loop unless it's critical.
+                # If we used queue.task_done() inside the inner try/finally, we are good.
+                pass
 
-            prompt_file = role_map.get(role_raw, "agent_orchestrator.md")
-            prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, prompt_file)
-            if os.path.exists(prompt_path):
-                with open(prompt_path, "r", encoding="utf-8") as f:
-                    instruction = f.read()
-            else:
-                instruction = f"Act as {role}."
+    # Start workers
+    workers = []
+    for i in range(concurrency_limit):
+        w = asyncio.create_task(worker(i))
+        workers.append(w)
 
-            agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
-            full_instruction = f"{framework_instruction}\n\n{instruction}\n\nTask: {desc}"
-            
-            # Add status-specific instructions
-            if status == "in_progress":
-                resume_instruction = (
-                    "\n\n=== RESUME NOTICE ===\n"
-                    "This task is marked as IN_PROGRESS from a previous session.\n"
-                    "Search for existing files, code, or partial work in the workspace before starting.\n"
-                    "Resume where it left off if possible. Review any existing implementation.\n"
-                    "==================="
-                )
-                full_instruction += resume_instruction
-                log(f"    [Task {task_index+1}] Adding RESUME instruction")
-            
-            elif status == "blocked":
-                unblock_instruction = (
-                    "\n\n=== UNBLOCK NOTICE ===\n"
-                    "This task was previously BLOCKED.\n"
-                )
-                if blocker_reason:
-                    unblock_instruction += f"Previous blocker: {blocker_reason}\n"
-                unblock_instruction += (
-                    "Investigate the root cause, check logs, verify dependencies, and attempt to resolve the blocker.\n"
-                    "If still blocked after investigation, document the reason clearly in your response.\n"
-                    "======================"
-                )
-                full_instruction += unblock_instruction
-                log(f"    [Task {task_index+1}] Adding UNBLOCK instruction" + (f" (Reason: {blocker_reason})" if blocker_reason else ""))
-            
-            agent = agent_factory(
-                name=agent_name,
-                instruction=full_instruction,
-                tools=worker_tools,
-                agent_role=role  # Pass role for optimal model selection
-            )
+    # Wait until the queue is fully processed
+    await queue.join()
 
-            # Make session ID unique per cycle or delete previous?
-            # Easiest: append random or cycle index if passed.
-            # But run_parallel_execution doesn't know cycle count?
-            # Actually, we can check if session exists.
-            # But simpler: use random suffix or just handle the error.
-            # Better: Pass cycle_index to run_parallel_execution.
-            worker_pid = f"worker_{task_index}_{os.urandom(4).hex()}" 
-            await session_service.create_session(
-                app_name="SprintRunner", 
-                user_id="user", 
-                session_id=worker_pid
-            )
-            runner = Runner(
-                app_name="SprintRunner", 
-                agent=agent, 
-                session_service=session_service
-            )
-
-            @retry_decorator
-            async def run_agent():
-                turn_count = 0
-                max_turns = 20
-                async for event in runner.run_async(
-                    user_id="user", 
-                    session_id=worker_pid, 
-                    new_message=types.Content(parts=[types.Part(text=f"Execute this task: {desc}")])
-                ):
-                    turn_count += 1
-                    if turn_count > max_turns:
-                        msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
-                        logger.error(msg)
-                        print(msg) # Print to stdout for test capture
-                        break
-
-                    if event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if part.text:
-                                msg = f"[Agent {role_raw}] Thought: {part.text}"
-                                logger.info(msg)
-                                print(msg)
-                            if getattr(part, 'function_call', None):
-                                msg = f"[Agent {role_raw}] Call: {part.function_call.name}({part.function_call.args})"
-                                logger.info(msg)
-                                print(msg)
-
-            try:
-                await run_agent()
-                log(f"    [Task {task_index+1}] Completed @{role_raw}")
-                # DIRECT UPDATE: Mark done
-                await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
-
-            except Exception as e:
-                log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
-                # Mark as blocked if it fails
-                await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
-
-    tasks = [run_single_task(task, idx) for idx, task in enumerate(tasks_to_execute)]
-    await asyncio.gather(*tasks)
+    # Cancel our worker tasks
+    for w in workers:
+        w.cancel()
+    
+    # Wait until all worker tasks are cancelled
+    await asyncio.gather(*workers, return_exceptions=True)
+    
     return len(tasks_to_execute)
 
 # --- Phase 2: QA & Validation ---

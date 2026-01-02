@@ -13,6 +13,16 @@ This backlog tracks future enhancements and features for the Project.
     - *Acceptance Criteria:*
         - `App.js` displays "Project Dashboard".
         - Fetches health status from API.
+- **[ ] Story: Fix mathematical error in `add` function**
+    - *Description:* Correct the `add` function in `project_tracking/dummy_math.py` to return the sum of two numbers instead of their difference.
+    - *Acceptance Criteria:*
+        - `add(5, 3)` returns `8`.
+        - Unit tests confirm correct addition.
+- **[ ] Story: Enhance Frontend to display `add` function result**
+    - *Description:* Modify the React frontend to call the backend `add` function and display its result.
+    - *Acceptance Criteria:*
+        - Frontend displays the result of `add(x, y)` from the backend.
+        - User can input two numbers and see their sum.
 
 ## 🟡 Medium Priority
 - **[ ] Story: CI/CD Pipeline Setup**
