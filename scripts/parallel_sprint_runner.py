@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import re
@@ -43,9 +44,23 @@ def log(msg):
 def retry_decorator(func):
     return func
 
-def default_agent_factory(name, instruction, tools, model=None):
+def default_agent_factory(name, instruction, tools, model=None, agent_role=None):
+    """
+    Create an LLM agent with optimal model selection.
+    
+    Args:
+        name: Agent instance name
+        instruction: Agent system prompt
+        tools: Available tools for the agent
+        model: Optional explicit model override
+        agent_role: Agent role/type for automatic model selection (e.g., 'Backend', 'QA', 'Orchestrator')
+    """
     if model is None:
-        model = SprintConfig.MODEL_NAME
+        # Determine model based on agent role/name
+        identifier = agent_role if agent_role else name
+        model = SprintConfig.get_model_for_agent(identifier)
+    
+    logger.info(f"Creating agent '{name}' (role: {agent_role or 'unknown'}) with model: {model}")
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
@@ -72,7 +87,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
             
             # DIRECT UPDATE: Mark in-progress
             try:
-                await update_sprint_task_status(desc, "[/]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[/]", SprintConfig.get_sprint_dir())
             except Exception as e:
                 log(f"    [Update Error] Failed to mark in-progress: {e}")
 
@@ -90,7 +105,8 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
             agent = agent_factory(
                 name=agent_name,
                 instruction=full_instruction,
-                tools=worker_tools
+                tools=worker_tools,
+                agent_role=role  # Pass role for optimal model selection
             )
 
             # Make session ID unique per cycle or delete previous?
@@ -142,12 +158,12 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                 await run_agent()
                 log(f"    [Task {task_index+1}] Completed @{role_raw}")
                 # DIRECT UPDATE: Mark done
-                await update_sprint_task_status(desc, "[x]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
 
             except Exception as e:
                 log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
                 # DIRECT UPDATE: Mark blocked
-                await update_sprint_task_status(desc, "[!]", SprintConfig.SPRINT_DIR)
+                await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
 
     tasks = [run_single_task(task, idx) for idx, task in enumerate(tasks_to_execute)]
     await asyncio.gather(*tasks)
@@ -186,7 +202,8 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     qa_agent = agent_factory(
         name="QA_Engineer",
         instruction=qa_full_instruction,
-        tools=qa_tools
+        tools=qa_tools,
+        agent_role="QA"  # Use Pro model for comprehensive testing
     )
 
     qa_pid = f"qa_session_{os.urandom(4).hex()}"
@@ -239,7 +256,8 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
                     "1. Read the 'project_tracking/QA_REPORT.md'.\n"
                     "2. Read the latest sprint file.\n"
                     "3. Generate a 'project_tracking/DEMO_WALKTHROUGH.md' summarizing what was built and how to use it.\n",
-        tools=worker_tools 
+        tools=worker_tools,
+        agent_role="Orchestrator"  # Use Pro model for coordination
     )
     
     await session_service.create_session(
@@ -314,7 +332,8 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     pm_agent = agent_factory(
         name="ProductManager",
         instruction=pm_full_instruction,
-        tools=worker_tools
+        tools=worker_tools,
+        agent_role="PM"  # Use Flash model for quality requirements
     )
     
     await session_service.create_session(
@@ -350,9 +369,10 @@ class SprintRunner:
     async def run_cycle(self):
         SprintConfig.validate()
         
-        latest_sprint = detect_latest_sprint_file(SprintConfig.SPRINT_DIR)
+        sprint_dir = SprintConfig.get_sprint_dir()
+        latest_sprint = detect_latest_sprint_file(sprint_dir)
         if not latest_sprint:
-            log(f"No sprint files found in {SprintConfig.SPRINT_DIR}")
+            log(f"No sprint files found in {sprint_dir}")
             return
         
         log(f"[*] Starting Sprint Runner for {latest_sprint}")
@@ -409,7 +429,16 @@ class SprintRunner:
         log("\n[*] Mission execution complete.")
 
 # --- Main Entry Point ---
-async def main():
+async def main(project_root=None):
+    # Set project root if provided, otherwise default to CWD
+    if project_root:
+        SprintConfig.set_project_root(project_root)
+    else:
+        SprintConfig.set_project_root(os.getcwd())
+    
+    log(f"Project root: {SprintConfig.PROJECT_ROOT}")
+    log(f"Sprint directory: {SprintConfig.get_sprint_dir()}")
+    
     runner = SprintRunner()
     try:
         await runner.run_cycle()
@@ -430,8 +459,17 @@ async def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run AI Sprint Runner")
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default=None,
+        help="Project root directory (defaults to current working directory)"
+    )
+    args = parser.parse_args()
+    
     try:
-        asyncio.run(main())
+        asyncio.run(main(project_root=args.project_root))
     except Exception as e:
         log(f"CRITICAL ERROR: {e}")
         traceback.print_exc()

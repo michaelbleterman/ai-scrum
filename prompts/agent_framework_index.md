@@ -55,6 +55,7 @@ The framework uses a parent-child relationship. The **Orchestrator** acts as the
 
 #### 2. Shared Session State (`session.state`)
 The `project_tracking/sprint_xxx.md` file serves as the official ADK `session.state`.
+- **Project-Relative Paths:** All file paths (e.g., `project_tracking/backlog.md`) are relative to the project root directory where the sprint runner executes.
 - **Write Locking:** Every agent MUST operate within its own unique row in the sprint table.
 - **Data Persistence:** Status changes (`[/]`, `[x]`) and logs are automatically synced to the shared state.
 - **A2A (Agent-to-Agent):** Agents communicate by writing structured `NOTES` to the shared state, which other agents poll during their execution cycle.
