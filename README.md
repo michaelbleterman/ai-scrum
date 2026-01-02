@@ -254,3 +254,5 @@ See [`MODEL_SELECTION.md`](MODEL_SELECTION.md) for detailed model capabilities, 
 - **Tests**:
     - Updated `tests/test_sprint_utils.py` to verify inline role parsing.
     - Patched `tests/test_e2e_real.py` to ensure robust path handling during test execution (fixing `CWD` mismatches).
+- **Resiliency**:
+    - **Retry Logic**: Enhanced `parallel_sprint_runner.py` to automatically retry tasks with exponential backoff when encountering **429 Rate Limit** errors from the Gemini API.

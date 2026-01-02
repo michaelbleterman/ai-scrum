@@ -58,14 +58,22 @@ def log(msg):
     # Log to file and console via logger
     logger.info(msg)
 
-# retry_decorator = retry(
-#     wait=wait_exponential(multiplier=30, min=30, max=300),
-#     stop=stop_after_attempt(5),
-#     retry=retry_if_exception(retry_predicate),
-#     reraise=True
-# )
-def retry_decorator(func):
-    return func
+def retry_predicate(exception):
+    """
+    Retry if the exception is a 429 Resource Exhausted or related rate limit error.
+    """
+    e_str = str(exception)
+    if "429" in e_str or "ResourceExhausted" in e_str or "Quota exceeded" in e_str:
+        log(f"    [Retry Trigger] Detected Rate Limit (429): {e_str[:100]}...")
+        return True
+    return False
+
+retry_decorator = retry(
+    wait=wait_exponential(multiplier=10, min=10, max=120), # Wait between 10s and 120s
+    stop=stop_after_attempt(10), # Increase retries to 10 for deep backoff
+    retry=retry_if_exception(retry_predicate),
+    reraise=True
+)
 
 def default_agent_factory(name, instruction, tools, model=None, agent_role=None):
     """
