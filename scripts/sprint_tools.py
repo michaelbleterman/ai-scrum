@@ -90,6 +90,11 @@ def run_command(command: str):
         # PAGER=cat to avoid hanging on long output
         env = os.environ.copy()
         env["PAGER"] = "cat"
+        # Force non-interactive modes
+        env["CI"] = "true"
+        env["npm_config_yes"] = "true" 
+        env["PIP_NO_INPUT"] = "1"
+        env["NON_INTERACTIVE"] = "true"
         # Timeout added to prevent hangs
         result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env, timeout=30)
         return {
