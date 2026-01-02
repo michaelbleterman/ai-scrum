@@ -13,21 +13,44 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 # Import Config and Modules
 from sprint_config import SprintConfig
 from sprint_tools import worker_tools, orchestrator_tools, qa_tools, update_sprint_task_status
-from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks
+from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 # --- Logging Setup ---
 def setup_logging():
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler("sprint_debug.log", mode='a', encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
+    # Create logs directory if it doesn't exist
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, "sprint_debug.log")
+    
+    # Create rotating file handler (20MB max, 5 backups = 100MB total)
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=20 * 1024 * 1024,  # 20 MB
+        backupCount=5,
+        encoding='utf-8'
     )
-    return logging.getLogger("SprintRunner")
+    file_handler.setLevel(logging.DEBUG)
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Format with timestamp
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logger = logging.getLogger("SprintRunner")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
 
 logger = setup_logging()
 
@@ -65,13 +88,39 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
 
 # --- Phase 1: Parallel Execution ---
 async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
-    log("\n[Phase 1] Parallel Execution: Checking for pending tasks...")
+    log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
+    
+    # Analyze sprint status before execution
+    status_summary = analyze_sprint_status(sprint_file)
+    log(f"    Sprint Status Summary:")
+    log(f"      Total Tasks: {status_summary['total']}")
+    log(f"      Completed: {status_summary.get('done', 0)}")
+    log(f"      In-Progress: {status_summary['in_progress']}")
+    log(f"      Blocked: {status_summary['blocked']}")
+    log(f"      Todo: {status_summary['todo']}")
+    
+    if status_summary['blocked'] > 0:
+        log(f"    Blocked Tasks:")
+        for blocked_task in status_summary['blocked_tasks']:
+            log(f"      - @{blocked_task['role']}: {blocked_task['desc']}")
+    
+    if status_summary['in_progress'] > 0:
+        log(f"    In-Progress Tasks (will resume):")
+        for in_prog_task in status_summary['in_progress_tasks']:
+            log(f"      - @{in_prog_task['role']}: {in_prog_task['desc']}")
+    
+    log("\n    Checking for tasks to execute...")
     tasks_to_execute = parse_sprint_tasks(sprint_file)
     if not tasks_to_execute:
-        log("    No pending tasks ([ ]) found.")
+        log("    No pending tasks found.")
         return 0
 
-    log(f"    Found {len(tasks_to_execute)} tasks to execute.")
+    # Count tasks by status
+    status_counts = {"todo": 0, "in_progress": 0, "blocked": 0}
+    for task in tasks_to_execute:
+        status_counts[task["status"]] += 1
+    
+    log(f"    Found {len(tasks_to_execute)} tasks to execute: {status_counts['todo']} Todo, {status_counts['in_progress']} In-Progress, {status_counts['blocked']} Blocked")
     
     concurrency_limit = SprintConfig.CONCURRENCY_LIMIT
     sem = asyncio.Semaphore(concurrency_limit)
@@ -82,8 +131,11 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
             role_raw = task_info["role"]
             role = role_raw.lower()
             desc = task_info["desc"]
+            status = task_info["status"]
+            blocker_reason = task_info.get("blocker_reason")
             
-            log(f"\n    [Task {task_index+1}] Starting @{role_raw}: {desc}")
+            status_label = status.upper().replace('_', '-')
+            log(f"\n    [Task {task_index+1}] Starting @{role_raw} [{status_label}]: {desc}")
             
             # DIRECT UPDATE: Mark in-progress
             try:
@@ -101,6 +153,33 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
 
             agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
             full_instruction = f"{framework_instruction}\n\n{instruction}\n\nTask: {desc}"
+            
+            # Add status-specific instructions
+            if status == "in_progress":
+                resume_instruction = (
+                    "\n\n=== RESUME NOTICE ===\n"
+                    "This task is marked as IN_PROGRESS from a previous session.\n"
+                    "Search for existing files, code, or partial work in the workspace before starting.\n"
+                    "Resume where it left off if possible. Review any existing implementation.\n"
+                    "==================="
+                )
+                full_instruction += resume_instruction
+                log(f"    [Task {task_index+1}] Adding RESUME instruction")
+            
+            elif status == "blocked":
+                unblock_instruction = (
+                    "\n\n=== UNBLOCK NOTICE ===\n"
+                    "This task was previously BLOCKED.\n"
+                )
+                if blocker_reason:
+                    unblock_instruction += f"Previous blocker: {blocker_reason}\n"
+                unblock_instruction += (
+                    "Investigate the root cause, check logs, verify dependencies, and attempt to resolve the blocker.\n"
+                    "If still blocked after investigation, document the reason clearly in your response.\n"
+                    "======================"
+                )
+                full_instruction += unblock_instruction
+                log(f"    [Task {task_index+1}] Adding UNBLOCK instruction" + (f" (Reason: {blocker_reason})" if blocker_reason else ""))
             
             agent = agent_factory(
                 name=agent_name,
@@ -162,7 +241,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
 
             except Exception as e:
                 log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
-                # DIRECT UPDATE: Mark blocked
+                # Mark as blocked if it fails
                 await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
 
     tasks = [run_single_task(task, idx) for idx, task in enumerate(tasks_to_execute)]

@@ -143,6 +143,14 @@ python tests/test_e2e_real.py
 5. ✅ Backlog updates
 6. ✅ Exit code 0 (CI-compatible)
 
+### Run Runner Logic Unit Tests
+
+```powershell
+python -m pytest tests/test_runner_logic.py
+```
+
+Validates the core logic for sprint resumption and blocker handling without full E2E execution.
+
 ## CLI Reference
 
 ```powershell
