@@ -12,7 +12,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 
 # Import Config and Modules
 from sprint_config import SprintConfig
-from sprint_tools import worker_tools, orchestrator_tools, qa_tools, update_sprint_task_status
+from sprint_tools import worker_tools, orchestrator_tools, qa_tools, update_sprint_task_status, update_sprint_header
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 
 import logging
@@ -120,6 +120,7 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
 # --- Phase 1: Parallel Execution ---
 async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
     log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
+    await update_sprint_header("In Progress", SprintConfig.get_sprint_dir())
     
     # Analyze sprint status before execution
     status_summary = analyze_sprint_status(sprint_file)
@@ -330,6 +331,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
 # --- Phase 2: QA & Validation ---
 async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
     log("\n[Phase 2] QA Verification: Validating completed tasks...")
+    await update_sprint_header("QA", SprintConfig.get_sprint_dir())
     
     all_tasks = get_all_sprint_tasks(sprint_file)
     review_tasks = [t for t in all_tasks if t['status'] == 'done']
@@ -383,12 +385,18 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     @retry_decorator
     async def run_qa():
         nonlocal defects_created
+        turn_count = 0
+        max_turns = 20
         async for event in runner.run_async(
             user_id="user", 
             session_id=qa_pid, 
             new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
         ):
-             if event.content and event.content.parts:
+            turn_count += 1
+            if turn_count > max_turns:
+                 log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                 break
+            if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
                         logger.info(f"[QA] Thought: {part.text}")
@@ -433,11 +441,17 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
     
     @retry_decorator
     async def run_demo():
+        turn_count = 0
+        max_turns = 20
         async for event in runner.run_async(
             user_id="user", 
             session_id="demo_session", 
             new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
         ):
+            turn_count += 1
+            if turn_count > max_turns:
+                 log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                 break
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
@@ -455,20 +469,25 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
     if input_callback:
         feedback = input_callback("    Feedback: > ")
     else:
-        try:
-            if os.environ.get("NON_INTERACTIVE"):
-                feedback = "No feedback provided (Non-interactive mode)."
-            else:
+        # Default to non-interactive if NO TTY or Env var set
+        is_interactive = sys.stdin.isatty() and not os.environ.get("NON_INTERACTIVE")
+        
+        if not is_interactive:
+            feedback = "No feedback provided (Non-interactive mode)."
+            log("    [Info] Non-interactive mode detected. Skipping user input.")
+        else:
+            try:
                 print("    >> Please enter your feedback for this sprint (or press Enter to skip):")
                 feedback = input("    Feedback: > ")
-        except EOFError:
-            feedback = "No feedback provided (EOF)."
+            except EOFError:
+                feedback = "No feedback provided (EOF)."
         
     return feedback
 
 # --- Phase 4: Retro ---
 async def run_retro_phase(session_service, framework_instruction, sprint_file, demo_feedback, agent_factory=default_agent_factory):
     log("\n[Phase 4] Retrospective")
+    await update_sprint_header("Review", SprintConfig.get_sprint_dir())
     
     pm_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_product_management.md")
     if os.path.exists(pm_prompt_path):
@@ -511,13 +530,18 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     
     @retry_decorator
     async def run_retro():
+        turn_count = 0
+        max_turns = 20
         async for event in runner.run_async(
             user_id="user", 
             session_id="retro_session", 
             new_message=types.Content(parts=[types.Part(text="Conduct Retrospective.")])
         ):
-             pass
-
+            turn_count += 1
+            if turn_count > max_turns:
+                 log(f"[PM] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                 break
+             
     await run_retro()
     log("    Retrospective complete. Reports generated and Backlog updated.")
 

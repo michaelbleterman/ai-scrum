@@ -84,10 +84,11 @@ def write_file(path: str, content: str, overwrite: bool = False):
             return f"Error: File '{path}' already exists. Use overwrite=True to replace it, or use a different filename."
         
         # Create backup if overwriting
-        if os.path.exists(path) and overwrite:
-            backup_path = f"{path}.backup.{int(time.time())}"
-            shutil.copy2(path, backup_path)
-            logger.warning(f"[OVERWRITE] Backed up {path} to {backup_path}")
+        # (DISABLED: User request to avoid clutter)
+        # if os.path.exists(path) and overwrite:
+        #     backup_path = f"{path}.backup.{int(time.time())}"
+        #     shutil.copy2(path, backup_path)
+        #     logger.warning(f"[OVERWRITE] Backed up {path} to {backup_path}")
         
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -128,6 +129,93 @@ def run_command(command: str):
     except Exception as e:
         return f"Error: {e}"
 
+
+@log_async_tool_usage
+async def update_sprint_header(status: str, sprint_dir: str = "project_tracking"):
+    """
+    Updates the Sprint Status header in the latest sprint file.
+    
+    Args:
+        status (str): The new status (e.g., "In Progress", "QA", "Review").
+        sprint_dir (str): Directory containing sprint files.
+    """
+    import asyncio
+    import msvcrt
+    
+    # Fix for path if not absolute
+    if not os.path.isabs(sprint_dir):
+         sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
+
+    if not os.path.exists(sprint_dir):
+        # Fallback to checking parent dir if running from scripts/
+        parent_sprint_dir = os.path.join(os.path.dirname(os.getcwd()), "project_tracking")
+        if os.path.exists(parent_sprint_dir):
+            sprint_dir = parent_sprint_dir
+        else:
+             return f"Error: Sprint directory '{sprint_dir}' not found."
+
+    sprint_files = [f for f in os.listdir(sprint_dir) if f.startswith("SPRINT_") and f.endswith(".md")]
+    if not sprint_files:
+        return "Error: No sprint files found."
+    
+    sprint_files.sort()
+    latest_sprint = os.path.join(sprint_dir, sprint_files[-1])
+    
+    # Retry mechanism for file locking
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            # Use r+ mode for atomic read-modify-write
+            with open(latest_sprint, "r+", encoding="utf-8") as f:
+                try:
+                    # Acquire exclusive lock
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    
+                    # Read and update
+                    lines = f.readlines()
+                    
+                    updated_lines = []
+                    found = False
+                    for line in lines:
+                        if "**Status**:" in line:
+                            #Preserve indentation if any, though header usually has none
+                            new_line = re.sub(r"\*\*Status\*\*: .*", f"**Status**: {status}", line)
+                            updated_lines.append(new_line)
+                            found = True
+                        else:
+                            updated_lines.append(line)
+                    
+                    if found:
+                        # Write atomically
+                        f.seek(0)
+                        f.writelines(updated_lines)
+                        f.truncate()
+                        
+                        return f"Successfully updated status to '{status}' in {latest_sprint}"
+                    else:
+                        return f"Status header not found in {latest_sprint}"
+                
+                finally:
+                    # Always unlock
+                    try:
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    except:
+                        pass
+        
+        except IOError as e:
+            # Lock contention
+            if attempt < max_retries - 1:
+                wait_time = 0.1 * (2 ** attempt)
+                logger = logging.getLogger("SprintRunner")
+                logger.debug(f"Lock contention on attempt {attempt + 1}, retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                return f"Error: Failed to update status after {max_retries} attempts: {e}"
+        except Exception as e:
+            return f"Error updating sprint file: {e}"
+    
+    return "Error: Failed to update status"
+
 @log_async_tool_usage
 async def update_sprint_task_status(task_description: str, status: str = "[x]", sprint_dir: str = "project_tracking"):
     """
@@ -139,6 +227,7 @@ async def update_sprint_task_status(task_description: str, status: str = "[x]", 
         status (str): The new status checkmark, e.g., "[x]".
         sprint_dir (str): Directory containing sprint files.
     """
+
     import asyncio
     import msvcrt
     

@@ -123,38 +123,40 @@ class TestResumeSprintE2E:
         assert "Task 2 in progress" in descriptions
         assert "Task 3 blocked" in descriptions
     
-    @pytest.mark.asyncio
-    async def test_runner_validates_before_execution(self, temp_project):
+    def test_runner_validates_before_execution(self, temp_project):
         """Test that sprint runner validates state before execution."""
-        tmpdir, sprint_file = temp_project
-        
-        # Configure SprintConfig to use temp directory
-        SprintConfig.set_project_root(tmpdir)
-        
-        # Create a mock agent factory
-        def mock_agent_factory(name, instruction, tools, model=None, agent_role=None):
-            mock_agent = Mock()
-            mock_agent.name = name
-            return mock_agent
-        
-        # Create runner with mock factory
-        runner = SprintRunner(agent_factory=mock_agent_factory)
-        
-        # Validate that sprint is in 'ready' state
-        state = validate_sprint_state(sprint_file)
-        assert state == 'ready'
-        
-        # If we tried to run a completed sprint, it should exit early
-        # Create a completed sprint to test this
-        completed_sprint = os.path.join(tmpdir, "project_tracking", "SPRINT_COMPLETE.md")
-        with open(completed_sprint, 'w') as f:
-            f.write("""# Sprint Complete
+        async def _test():
+            tmpdir, sprint_file = temp_project
+            
+            # Configure SprintConfig to use temp directory
+            SprintConfig.set_project_root(tmpdir)
+            
+            # Create a mock agent factory
+            def mock_agent_factory(name, instruction, tools, model=None, agent_role=None):
+                mock_agent = Mock()
+                mock_agent.name = name
+                return mock_agent
+            
+            # Create runner with mock factory
+            runner = SprintRunner(agent_factory=mock_agent_factory)
+            
+            # Validate that sprint is in 'ready' state
+            state = validate_sprint_state(sprint_file)
+            assert state == 'ready'
+            
+            # If we tried to run a completed sprint, it should exit early
+            # Create a completed sprint to test this
+            completed_sprint = os.path.join(tmpdir, "project_tracking", "SPRINT_COMPLETE.md")
+            with open(completed_sprint, 'w') as f:
+                f.write("""# Sprint Complete
+    
+    - [x] @Backend: All done
+    """)
+            
+            state = validate_sprint_state(completed_sprint)
+            assert state == 'completed'
 
-- [x] @Backend: All done
-""")
-        
-        state = validate_sprint_state(completed_sprint)
-        assert state == 'completed'
+        asyncio.run(_test())
 
 
 if __name__ == "__main__":
