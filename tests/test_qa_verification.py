@@ -1,8 +1,8 @@
 import os
-from dummy_math import add
+from project_tracking.dummy_math import add
 
 def test_add_function():
-    # Expecting 2 + 3 = 5, but dummy_math.py has a bug (returns a - b)
+    # Expecting 2 + 3 = 5
     result = add(2, 3)
     assert result == 5, f"Expected 5, but got {result}"
 

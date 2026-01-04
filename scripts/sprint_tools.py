@@ -63,9 +63,32 @@ def read_file(path: str):
         return f"Error: {e}"
 
 @log_tool_usage
-def write_file(path: str, content: str):
-    """Writes content to a file."""
+def write_file(path: str, content: str, overwrite: bool = False):
+    """
+    Writes content to a file.
+    
+    Args:
+        path: File path to write to
+        content: Content to write
+        overwrite: If False (default), will error if file exists.
+                   Set to True only for intentional overwrites.
+    """
+    import time
+    import shutil
+    
+    logger = logging.getLogger("SprintRunner")
+    
     try:
+        # Check if file exists
+        if os.path.exists(path) and not overwrite:
+            return f"Error: File '{path}' already exists. Use overwrite=True to replace it, or use a different filename."
+        
+        # Create backup if overwriting
+        if os.path.exists(path) and overwrite:
+            backup_path = f"{path}.backup.{int(time.time())}"
+            shutil.copy2(path, backup_path)
+            logger.warning(f"[OVERWRITE] Backed up {path} to {backup_path}")
+        
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -109,11 +132,16 @@ def run_command(command: str):
 async def update_sprint_task_status(task_description: str, status: str = "[x]", sprint_dir: str = "project_tracking"):
     """
     Updates the status of a specific task in the latest sprint file.
+    Uses file locking to prevent race conditions during concurrent updates.
+    
     Args:
         task_description (str): The text description of the task (without the - [ ] part).
         status (str): The new status checkmark, e.g., "[x]".
         sprint_dir (str): Directory containing sprint files.
     """
+    import asyncio
+    import msvcrt
+    
     # Fix for path if not absolute
     if not os.path.isabs(sprint_dir):
          sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
@@ -133,29 +161,62 @@ async def update_sprint_task_status(task_description: str, status: str = "[x]", 
     sprint_files.sort()
     latest_sprint = os.path.join(sprint_dir, sprint_files[-1])
     
-    try:
-        with open(latest_sprint, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+    # Retry mechanism for file locking
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            # Use r+ mode for atomic read-modify-write
+            with open(latest_sprint, "r+", encoding="utf-8") as f:
+                try:
+                    # Acquire exclusive lock (Windows compatible)
+                    # Lock 1 byte at position 0
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    
+                    # Read and update
+                    lines = f.readlines()
+                    
+                    updated_lines = []
+                    found = False
+                    for line in lines:
+                        if task_description in line and "- [" in line:
+                            new_line = re.sub(r"- \[.\]", f"- {status}", line)
+                            updated_lines.append(new_line)
+                            found = True
+                        else:
+                            updated_lines.append(line)
+                    
+                    if found:
+                        # Write atomically
+                        f.seek(0)
+                        f.writelines(updated_lines)
+                        f.truncate()
+                        
+                        return f"Successfully updated task '{task_description}' to {status} in {latest_sprint}"
+                    else:
+                        return f"Task '{task_description}' not found in {latest_sprint}"
+                
+                finally:
+                    # Always unlock
+                    try:
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    except:
+                        pass  # Unlocking may fail if file is closed
         
-        updated_lines = []
-        found = False
-        for line in lines:
-            if task_description in line and "- [" in line:
-                new_line = re.sub(r"- \[.\]", f"- {status}", line)
-                updated_lines.append(new_line)
-                found = True
+        except IOError as e:
+            # Lock contention - retry with exponential backoff
+            if attempt < max_retries - 1:
+                wait_time = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6s
+                logger = logging.getLogger("SprintRunner")
+                logger.debug(f"Lock contention on attempt {attempt + 1}, retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
             else:
-                updated_lines.append(line)
+                return f"Error: Failed to update after {max_retries} attempts due to lock contention: {e}"
         
-        if found:
-            with open(latest_sprint, "w", encoding="utf-8") as f:
-                f.writelines(updated_lines)
-            return f"Successfully updated task '{task_description}' to {status} in {latest_sprint}"
-        else:
-            return f"Task '{task_description}' not found in {latest_sprint}"
+        except Exception as e:
+            return f"Error updating sprint file: {e}"
+    
+    return f"Error: Failed to update task '{task_description}' after {max_retries} attempts"
 
-    except Exception as e:
-        return f"Error updating sprint file: {e}"
 
 @log_async_tool_usage
 async def add_sprint_task(role: str, task_description: str, sprint_dir: str = "project_tracking"):

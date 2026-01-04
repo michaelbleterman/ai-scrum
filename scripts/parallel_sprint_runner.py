@@ -75,6 +75,29 @@ retry_decorator = retry(
     reraise=True
 )
 
+def validate_sprint_state(sprint_file):
+    """
+    Validates if a sprint is ready to run or needs planning.
+    
+    Returns:
+        'ready': Sprint has tasks and can be executed
+        'needs_planning': Sprint exists but has no tasks
+        'completed': All tasks are done
+    """
+    status = analyze_sprint_status(sprint_file)
+    
+    # Check if sprint has any tasks defined
+    if status['total'] == 0:
+        return 'needs_planning'
+    
+    # Check if sprint is completed (all tasks done, none in other states)
+    if status.get('done', 0) == status['total'] and status['total'] > 0:
+        # Double-check no pending/in-progress/blocked tasks
+        if status.get('todo', 0) == 0 and status.get('in_progress', 0) == 0 and status.get('blocked', 0) == 0:
+            return 'completed'
+    
+    return 'ready'
+
 def default_agent_factory(name, instruction, tools, model=None, agent_role=None):
     """
     Create an LLM agent with optimal model selection.
@@ -133,6 +156,10 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
     concurrency_limit = SprintConfig.CONCURRENCY_LIMIT
     role_map = SprintConfig.get_role_map()
     
+    # Track retry attempts per task description to prevent infinite blocked loops
+    task_retry_tracker = {}
+    MAX_BLOCKED_RETRIES = 2
+    
     # Create a Queue and populate it
     queue = asyncio.Queue()
     for idx, task in enumerate(tasks_to_execute):
@@ -150,6 +177,17 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     desc = task_info["desc"]
                     status = task_info["status"]
                     blocker_reason = task_info.get("blocker_reason")
+                    
+                    # Check retry limit for blocked tasks
+                    if status == "blocked":
+                        retry_count = task_retry_tracker.get(desc, 0)
+                        if retry_count >= MAX_BLOCKED_RETRIES:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] SKIPPING - exceeded retry limit ({retry_count} attempts): @{role_raw}: {desc}")
+                            log(f"    This task requires manual intervention. Check logs for previous failure reasons.")
+                            queue.task_done()
+                            continue
+                        else:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Retrying blocked task (attempt {retry_count + 1}/{MAX_BLOCKED_RETRIES}): @{role_raw}: {desc}")
                     
                     status_label = status.upper().replace('_', '-')
                     log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Starting @{role_raw} [{status_label}]: {desc}")
@@ -252,6 +290,8 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
 
                     except Exception as e:
                         log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                        # Track failure for retry limit
+                        task_retry_tracker[desc] = task_retry_tracker.get(desc, 0) + 1
                         # Mark as blocked if it fails
                         await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
                 
@@ -314,6 +354,8 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
         "1. For each task, generate and run E2E/Playwright/Unit tests to verify it.\n"
         "2. If a task fails verification, use the `add_sprint_task` tool to create a NEW task with description starting with 'DEFECT: ...'.\n"
         "3. Write a summary report to 'project_tracking/QA_REPORT.md'.\n"
+        "   - If all tasks pass, include 'Status: PASSED' in the report.\n"
+        "   - If any tasks fail, include 'Status: FAILED' and list the failures.\n"
         "4. If all validations pass, explicitly state 'ALL PASSED' in your final response."
     )
 
@@ -442,7 +484,9 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
         f"{user_feedback_section}\n"
         "INSTRUCTIONS:\n"
         "1. Read 'project_tracking/QA_REPORT.md' and 'project_tracking/DEMO_WALKTHROUGH.md'.\n"
-        "2. Generate 'project_tracking/SPRINT_REPORT.md'.\n"
+        "2. Generate 'project_tracking/SPRINT_REPORT.md' with a retrospective analysis.\n"
+        "   - Include a '## Retrospective' section discussing what went well, what didn't, and lessons learned.\n"
+        "   - Summarize sprint outcomes and key metrics.\n"
         "3. Parse the User Feedback and any outstanding issues.\n"
         "4. Append new Action Items or User Stories to 'project_tracking/backlog.md'.\n"
     )
@@ -494,6 +538,19 @@ class SprintRunner:
             return
         
         log(f"[*] Starting Sprint Runner for {latest_sprint}")
+        
+        # Validate sprint state before execution
+        sprint_state = validate_sprint_state(latest_sprint)
+        log(f"Sprint state: {sprint_state}")
+        
+        if sprint_state == 'completed':
+            log(f"✅ Sprint {latest_sprint} is already completed!")
+            log(f"All tasks are done. Start a new sprint or run retrospective.")
+            return
+        elif sprint_state == 'needs_planning':
+            log(f"⚠️  Sprint {latest_sprint} has no tasks defined.")
+            log(f"This sprint needs to be populated by the PM agent before execution.")
+            return
         
         # Load shared framework instructions
         framework_index_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_framework_index.md")

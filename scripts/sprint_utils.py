@@ -85,11 +85,19 @@ def parse_sprint_tasks(sprint_file_path: str):
                 
                 # Extract blocker reason if present (format: "task desc [BLOCKED: reason]")
                 blocker_reason = None
-                blocker_match = re.search(r"\[BLOCKED:\s*(.+?)\]\s*$", desc)
-                if blocker_match:
-                    blocker_reason = blocker_match.group(1).strip()
-                    # Remove blocker annotation from description
-                    desc = re.sub(r"\s*\[BLOCKED:.+?\]\s*$", "", desc).strip()
+                if status == "blocked":
+                    blocker_match = re.search(r"\[BLOCKED:\s*(.+?)\]\s*$", desc)
+                    if blocker_match:
+                        blocker_reason = blocker_match.group(1).strip()
+                        # Remove blocker annotation from description
+                        desc = re.sub(r"\s*\[BLOCKED:.+?\]\s*$", "", desc).strip()
+                    else:
+                        # Log warning when blocked task is missing blocker reason
+                        import logging
+                        logging.getLogger("SprintRunner").warning(
+                            f"Blocked task missing blocker reason: '{desc}' (@{role}). "
+                            f"Use format: [BLOCKED: reason]"
+                        )
                 
                 # Only return pending, in-progress, or blocked tasks (skip completed [x])
                 tasks.append({

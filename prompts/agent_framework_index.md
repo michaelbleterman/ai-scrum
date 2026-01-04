@@ -32,7 +32,13 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
     *   **Goal:** Audit code and enforce security standards.
     *   **Trigger:** "Act as the Security Engineer..."
 
-*   **Task States:** Always use these states in the Sprint Log: `[ ]` Todo, `[/]` In Progress, `[x]` Done, `[!]` Blocked.
+*   **Task States:** Always use these states in the Sprint Log:
+    - `[ ]` Todo
+    - `[/]` In Progress
+    - `[x]` Done
+    - `[!]` Blocked - **MUST** include blocker reason at end of description in format: `[BLOCKED: reason]`
+      - Example: `- [!] @Backend: API integration [BLOCKED: Missing OAuth credentials]`
+      - Example: `- [!] @QA: Test execution [BLOCKED: Test data not available]`
 *   **Inline Definition of Done (DoD):** Every technical task you generate MUST include an inline checklist (e.g., `- [ ] Unit tests pass`, `- [ ] Linting clean`).
 *   **PM Sign-off:** A story is only "Done" after PM formally validates acceptance criteria (`PM Sign-off: ✅`).
 
@@ -59,6 +65,13 @@ The `project_tracking/sprint_xxx.md` file serves as the official ADK `session.st
 - **Write Locking:** Every agent MUST operate within its own unique row in the sprint table.
 - **Data Persistence:** Status changes (`[/]`, `[x]`) and logs are automatically synced to the shared state.
 - **A2A (Agent-to-Agent):** Agents communicate by writing structured `NOTES` to the shared state, which other agents poll during their execution cycle.
+
+#### 2a. Critical File Protection Rules ⚠️
+- **NEVER** use `write_file` on existing sprint files (SPRINT_*.md) - it will error by default
+- **ALWAYS** use `update_sprint_task_status` to modify sprint task statuses
+- **READ FIRST**: Always use `read_file` before modifying any file to understand current state
+- **BACKUP**: `write_file` with `overwrite=True` automatically creates timestamped backups
+- **CHECK EXISTS**: Use `read_file` to verify if a file exists before attempting to create it
 
 ### Autonomous Workflow
 
