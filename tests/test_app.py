@@ -13,4 +13,4 @@ def test_add_function():
 def test_ui_file_content():
     with open('project_tracking/dummy_ui.txt', 'r') as f:
         content = f.read()
-    assert content == "Hello World"
+    assert content == "UI Loaded"

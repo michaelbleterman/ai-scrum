@@ -361,6 +361,68 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
         "4. If all validations pass, explicitly state 'ALL PASSED' in your final response."
     )
 
+    # --- Pre-QA: DevOps Environment Setup ---
+    log("    [QA Phase] Initializing Environment Setup (DevOps)...")
+    devops_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops.md")
+    if os.path.exists(devops_prompt_path):
+        with open(devops_prompt_path, "r", encoding="utf-8") as f:
+             devops_instruction = f.read()
+    else:
+        devops_instruction = "You are the DevOps Engineer."
+
+    devops_setup_instruction = (
+        f"{framework_instruction}\n\n{devops_instruction}\n\n"
+        "INSTRUCTIONS:\n"
+        "1. Prepare the test environment for QA execution.\n"
+        "2. Ensure the application is up and running on the expected local port.\n"
+        "3. Verify all services are healthy.\n"
+        "4. **DO NOT** delete or reset the database. Tests expect existing state.\n"
+        "5. Respond with 'Environment Ready' when complete."
+    )
+
+    devops_agent = agent_factory(
+        name="DevOps_Setup",
+        instruction=devops_setup_instruction,
+        tools=worker_tools,
+        agent_role="DevOps"
+    )
+
+    devops_pid = f"devops_setup_{os.urandom(4).hex()}"
+    await session_service.create_session(
+        app_name="SprintRunner", 
+        user_id="user", 
+        session_id=devops_pid
+    )
+    devops_runner = Runner(
+        app_name="SprintRunner", 
+        agent=devops_agent, 
+        session_service=session_service
+    )
+
+    @retry_decorator
+    async def run_devops_setup():
+        turn_count = 0
+        max_turns = 10
+        async for event in devops_runner.run_async(
+            user_id="user", 
+            session_id=devops_pid, 
+            new_message=types.Content(parts=[types.Part(text="Setup environment for QA.")])
+        ):
+            turn_count += 1
+            if turn_count > max_turns:
+                 log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
+                 break
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        logger.info(f"[DevOps] Thought: {part.text}")
+                    if getattr(part, 'function_call', None):
+                        logger.info(f"[DevOps] Call: {part.function_call.name}({part.function_call.args})")
+
+    await run_devops_setup()
+    log("    [QA Phase] Environment Setup Complete. Starting QA Agent...")
+    # ----------------------------------------
+
     qa_agent = agent_factory(
         name="QA_Engineer",
         instruction=qa_full_instruction,

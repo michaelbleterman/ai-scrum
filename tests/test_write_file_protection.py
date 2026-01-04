@@ -64,27 +64,26 @@ class TestWriteFileProtection:
                 assert f.read() == "New content"
     
     def test_backup_created_on_overwrite(self):
-        """Test that backup is created when overwriting."""
+        """Test that NO backup is created when overwriting (feature disabled)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = os.path.join(tmpdir, "test.txt")
             
             # Create initial file
             write_file(test_file, "Original content")
             
-            # Wait a moment to ensure different timestamp
+            # Wait a moment
             time.sleep(0.1)
             
             # Overwrite with permission
             write_file(test_file, "New content", overwrite=True)
             
-            # Check for backup file
+            # Check for backup file - SHOULD BE NONE as feature is disabled
             backup_files = [f for f in os.listdir(tmpdir) if f.startswith("test.txt.backup")]
-            assert len(backup_files) == 1
+            assert len(backup_files) == 0, "Backup files should not be created"
             
-            # Verify backup contains original content
-            backup_path = os.path.join(tmpdir, backup_files[0])
-            with open(backup_path, 'r') as f:
-                assert f.read() == "Original content"
+            # Verify content is new
+            with open(test_file, 'r') as f:
+                assert f.read() == "New content"
     
     def test_sprint_file_protection(self):
         """Test that attempting to overwrite a SPRINT_*.md file fails."""

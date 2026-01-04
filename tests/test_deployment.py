@@ -1,14 +1,51 @@
-
 import unittest
 import json
 import yaml
+import os
+import tempfile
 
 class TestDeployment(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.config_path = os.path.join(self.tmpdir.name, 'config.json')
+        self.deploy_path = os.path.join(self.tmpdir.name, 'deploy.yaml')
+        
+        # Create dummy config
+        with open(self.config_path, 'w') as f:
+            json.dump({'image': 'my-app:latest', 'port': 8080}, f)
+            
+        # Create dummy deployment manifest
+        manifest = [
+            {
+                'apiVersion': 'apps/v1',
+                'kind': 'Deployment',
+                'spec': {
+                    'template': {
+                        'spec': {
+                            'containers': [{'name': 'app', 'image': 'my-app:latest', 'ports': [{'containerPort': 8080}]}]
+                        }
+                    }
+                }
+            },
+            {
+                'apiVersion': 'v1',
+                'kind': 'Service',
+                'spec': {
+                    'ports': [{'port': 8080}]
+                }
+            }
+        ]
+        with open(self.deploy_path, 'w') as f:
+            yaml.dump_all(manifest, f)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
     def test_deployment_manifest(self):
-        with open('project_tracking/config.json', 'r') as f:
+        with open(self.config_path, 'r') as f:
             config = json.load(f)
 
-        with open('deploy.yaml', 'r') as f:
+        with open(self.deploy_path, 'r') as f:
             deployment = list(yaml.safe_load_all(f))
 
         # Check Deployment

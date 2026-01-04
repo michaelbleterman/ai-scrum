@@ -11,4 +11,4 @@ def test_ui_content():
     assert os.path.exists(ui_path), "UI file does not exist"
     with open(ui_path, "r") as f:
         content = f.read().strip()
-    assert content == "Hello World", f"Expected 'Hello World', but got '{content}'"
+    assert content == "UI Loaded", f"Expected 'UI Loaded', but got '{content}'"

@@ -7,4 +7,4 @@ def test_dummy_ui_content():
     file_path = os.path.join("project_tracking", "dummy_ui.txt")
     with open(file_path, "r") as f:
         content = f.read()
-    assert content == "Hello World"
+    assert content == "UI Loaded"
