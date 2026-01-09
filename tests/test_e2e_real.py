@@ -88,6 +88,27 @@ class TestE2EReal(unittest.TestCase):
         except Exception as e:
             self.fail(f"Execution failed with exception: {e}")
         
+        # --- CONTEXT DISCOVERY VALIDATION ---
+        print("\n[Test] Validating context discovery...")
+        
+        # Check that agents discovered project context
+        log_path = os.path.join(self.BASE_DIR, "logs", "sprint_debug.log")
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                log_content = f.read()
+                
+                # Verify discover_project_context was called
+                if "discover_project_context" in log_content:
+                    print("[Test] ✓ Context discovery tool was used")
+                else:
+                    print("[Test] ⚠️  discover_project_context not found in logs")
+                
+                # Verify search_codebase was available (may or may not be used in this simple test)
+                if "search_codebase" in log_content:
+                    print("[Test] ✓ Search codebase tool was used")
+        else:
+            print("[Test] ⚠️  Log file not found, skipping context validation")
+        
         # --- VALIDATION ---
         
         # 1. Check Files Exists

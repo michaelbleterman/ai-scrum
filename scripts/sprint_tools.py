@@ -407,13 +407,215 @@ def search_codebase(pattern: str, root_dir: str = "."):
     except Exception as e:
         return f"Error executing search: {e}"
 
+@log_tool_usage
+def discover_project_context(root_dir: str = "."):
+    """
+    Analyzes the project directory to detect tech stack, frameworks, and code patterns.
+    Returns a structured summary of the project's technology choices.
+    
+    Args:
+        root_dir: Root directory of the project to analyze
+        
+    Returns:
+        JSON string with project context including tech_stack, frameworks, languages, etc.
+    """
+    import json
+    import glob
+    
+    context = {
+        "tech_stack": [],
+        "frameworks": [],
+        "package_managers": [],
+        "key_files": [],
+        "languages": {}
+    }
+    
+    try:
+        # Detect package managers and tech stack
+        if os.path.exists(os.path.join(root_dir, "package.json")):
+            context["package_managers"].append("npm/yarn")
+            context["tech_stack"].append("Node.js")
+            context["key_files"].append("package.json")
+            try:
+                with open(os.path.join(root_dir, "package.json"), "r", encoding="utf-8") as f:
+                    pkg = json.loads(f.read())
+                    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                    if "express" in deps:
+                        context["frameworks"].append("Express.js")
+                    if "react" in deps:
+                        context["frameworks"].append("React")
+                    if "next" in deps:
+                        context["frameworks"].append("Next.js")
+                    if "vue" in deps:
+                        context["frameworks"].append("Vue.js")
+                    if "@angular/core" in deps:
+                        context["frameworks"].append("Angular")
+            except:
+                pass
+        
+        if os.path.exists(os.path.join(root_dir, "requirements.txt")):
+            context["package_managers"].append("pip")
+            context["tech_stack"].append("Python")
+            context["key_files"].append("requirements.txt")
+        
+        if os.path.exists(os.path.join(root_dir, "pyproject.toml")):
+            context["package_managers"].append("poetry")
+            if "Python" not in context["tech_stack"]:
+                context["tech_stack"].append("Python")
+            context["key_files"].append("pyproject.toml")
+        
+        # Check for .NET projects
+        csproj_files = glob.glob(os.path.join(root_dir, "*.csproj"))
+        if csproj_files:
+            context["tech_stack"].append(".NET")
+            context["key_files"].extend([os.path.basename(f) for f in csproj_files[:3]])
+        
+        # Check for Go
+        if os.path.exists(os.path.join(root_dir, "go.mod")):
+            context["tech_stack"].append("Go")
+            context["key_files"].append("go.mod")
+        
+        # Check for Ruby
+        if os.path.exists(os.path.join(root_dir, "Gemfile")):
+            context["tech_stack"].append("Ruby")
+            context["key_files"].append("Gemfile")
+        
+        # Count file types to determine primary language
+        ignore_dirs = {".git", "node_modules", "__pycache__", ".venv", "dist", "build", "logs"}
+        for root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+            
+            # Limit depth to avoid scanning too deep
+            if root.count(os.sep) - root_dir.count(os.sep) > 3:
+                continue
+                
+            for file in files:
+                ext = os.path.splitext(file)[1]
+                if ext in [".js", ".jsx", ".ts", ".tsx"]:
+                    context["languages"]["JavaScript/TypeScript"] = context["languages"].get("JavaScript/TypeScript", 0) + 1
+                elif ext == ".py":
+                    context["languages"]["Python"] = context["languages"].get("Python", 0) + 1
+                elif ext == ".cs":
+                    context["languages"]["C#"] = context["languages"].get("C#", 0) + 1
+                elif ext in [".go"]:
+                    context["languages"]["Go"] = context["languages"].get("Go", 0) + 1
+                elif ext == ".rb":
+                    context["languages"]["Ruby"] = context["languages"].get("Ruby", 0) + 1
+                elif ext in [".java"]:
+                    context["languages"]["Java"] = context["languages"].get("Java", 0) + 1
+        
+        # Determine primary language
+        if context["languages"]:
+            primary_lang = max(context["languages"].items(), key=lambda x: x[1])
+            context["primary_language"] = primary_lang[0]
+        
+        return json.dumps(context, indent=2)
+        
+    except Exception as e:
+        return json.dumps({"error": f"Failed to discover context: {e}"}, indent=2)
+
+@log_async_tool_usage
+async def enrich_task_context(task_description: str, context_data: dict, sprint_dir: str = "project_tracking"):
+    """
+    Adds technical context to a task in the sprint file as an HTML comment.
+    This context persists across sprint interruptions and helps with resume.
+    
+    Args:
+        task_description: The task description to enrich
+        context_data: Dict with keys like 'tech_stack', 'related_files', 'patterns', 'dependencies'
+        sprint_dir: Directory containing sprint files
+    """
+    import asyncio
+    import msvcrt
+    import json
+    
+    if not os.path.isabs(sprint_dir):
+        sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
+    
+    if not os.path.exists(sprint_dir):
+        return f"Error: Sprint directory '{sprint_dir}' not found."
+    
+    sprint_files = [f for f in os.listdir(sprint_dir) if f.startswith("SPRINT_") and f.endswith(".md")]
+    if not sprint_files:
+        return "Error: No sprint files found."
+    
+    sprint_files.sort()
+    latest_sprint = os.path.join(sprint_dir, sprint_files[-1])
+    
+    # Build context comment
+    context_lines = ["  <!-- CONTEXT"]
+    if 'tech_stack' in context_data:
+        context_lines.append(f"  Tech Stack: {context_data['tech_stack']}")
+    if 'related_files' in context_data:
+        context_lines.append(f"  Related Files: {context_data['related_files']}")
+    if 'patterns' in context_data:
+        context_lines.append(f"  Patterns: {context_data['patterns']}")
+    if 'dependencies' in context_data:
+        context_lines.append(f"  Dependencies: {context_data['dependencies']}")
+    context_lines.append("  -->")
+    context_block = "\n".join(context_lines)
+    
+    # Retry mechanism for file locking
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            with open(latest_sprint, "r+", encoding="utf-8") as f:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    
+                    lines = f.readlines()
+                    updated_lines = []
+                    found = False
+                    
+                    for i, line in enumerate(lines):
+                        updated_lines.append(line)
+                        
+                        # If this line contains the task and doesn't already have context
+                        if task_description in line and "- [" in line:
+                            # Check if next line is already a context comment
+                            if i + 1 < len(lines) and "<!-- CONTEXT" in lines[i + 1]:
+                                continue  # Skip, already has context
+                            
+                            # Add context block after the task line
+                            updated_lines.append(context_block + "\n")
+                            found = True
+                    
+                    if found:
+                        f.seek(0)
+                        f.writelines(updated_lines)
+                        f.truncate()
+                        return f"Successfully enriched task '{task_description}' with context"
+                    else:
+                        return f"Task '{task_description}' not found or already has context"
+                
+                finally:
+                    try:
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    except:
+                        pass
+        
+        except IOError as e:
+            if attempt < max_retries - 1:
+                wait_time = 0.1 * (2 ** attempt)
+                logger = logging.getLogger("SprintRunner")
+                logger.debug(f"Lock contention on attempt {attempt + 1}, retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                return f"Error: Failed to enrich after {max_retries} attempts: {e}"
+        except Exception as e:
+            return f"Error enriching task: {e}"
+    
+    return "Error: Failed to enrich task"
+
 # Tool Definitions for Agent Consumption
 worker_tools = [
                      FunctionTool(list_dir),
                      FunctionTool(read_file),
                      FunctionTool(write_file),
                      FunctionTool(run_command),
-                     FunctionTool(search_codebase)
+                     FunctionTool(search_codebase),
+                     FunctionTool(discover_project_context),
+                     FunctionTool(enrich_task_context)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]

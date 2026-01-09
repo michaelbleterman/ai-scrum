@@ -208,7 +208,29 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         instruction = f"Act as {role}."
 
                     agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
-                    full_instruction = f"{framework_instruction}\n\n{instruction}\n\nTask: {desc}"
+                    
+                    # Discover and inject project context (cached per execution)
+                    if not hasattr(run_parallel_execution, '_project_context_cache'):
+                        try:
+                            from sprint_tools import discover_project_context
+                            project_root = SprintConfig.PROJECT_ROOT or os.getcwd()
+                            context_json = discover_project_context(project_root)
+                            run_parallel_execution._project_context_cache = context_json
+                            log(f"    [Context Discovery] Discovered project context: {context_json[:200]}...")
+                        except Exception as e:
+                            run_parallel_execution._project_context_cache = '{"error": "Context discovery failed"}'
+                            log(f"    [Context Discovery] Failed: {e}")
+                    
+                    project_context_instruction = (
+                        f"\n\n=== PROJECT CONTEXT ===\n"
+                        f"Working Directory: {SprintConfig.PROJECT_ROOT or os.getcwd()}\n"
+                        f"Technology Stack Analysis:\n{run_parallel_execution._project_context_cache}\n"
+                        f"\n**CRITICAL**: You MUST use the technologies listed above. "
+                        f"Do NOT introduce new languages or frameworks.\n"
+                        f"========================\n"
+                    )
+                    
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{project_context_instruction}\n\nTask: {desc}"
                     
                     # Add status-specific instructions
                     if status == "in_progress":

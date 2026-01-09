@@ -49,6 +49,76 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
 
 ---
 
+## 🔍 Project Context Discovery Protocol
+
+**MANDATORY FIRST STEPS** for ALL agents before starting ANY task:
+
+### 1. Discover Tech Stack
+Call `discover_project_context()` to identify:
+- Primary programming language(s) in use
+- Frameworks and libraries
+- Package managers (npm, pip, etc.)
+- Existing code patterns and structure
+
+### 2. Search Before Create
+Use `search_codebase()` to find:
+- Existing implementations you should extend
+- Similar features already built
+- Code patterns and conventions to follow
+
+### 3. Read and Understand
+Use `read_file()` on relevant files to:
+- Understand the existing architecture
+- Match coding style and patterns
+- Identify integration points
+
+### 4. Enrich Task with Context
+After discovering context, **persist it** to the sprint file:
+
+Call `enrich_task_context()` with discovered information:
+- Tech stack detected
+- Related files found
+- Patterns identified
+- Dependencies discovered
+
+This ensures context survives sprint interruptions and helps with resume.
+
+**Example**:
+```python
+enrich_task_context(
+    task_description="Add user registration endpoint",
+    context_data={
+        "tech_stack": "Node.js, Express.js",
+        "related_files": "src/auth/userController.js, src/models/User.js",
+        "patterns": "RESTful API, JWT authentication",
+        "dependencies": "express-validator, bcrypt"
+    }
+)
+```
+
+### Critical Rules
+
+> [!CAUTION]
+> **Tech Stack Compliance**
+> 
+> You MUST use the same tech stack as the existing project. Creating new implementations in a different language/framework than what exists is a CRITICAL FAILURE.
+
+**Example Workflow:**
+```
+1. discover_project_context(".")  # Returns: Node.js, Express, React
+2. search_codebase("user.*auth|registration")  # Find existing auth code
+3. read_file("src/auth/userController.js")  # Understand patterns
+4. Extend existing Node.js/Express code (NOT Python/Flask!)
+5. enrich_task_context(...) # Persist discoveries for resume
+```
+
+**Never:**
+- Assume the tech stack without verification
+- Create parallel implementations in different languages
+- Ignore existing code that should be extended
+
+---
+
 ## 🔄 ADK Parallel Multi-Agent Execution
 
 ### Overview
