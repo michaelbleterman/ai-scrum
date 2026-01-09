@@ -136,12 +136,34 @@ The `project_tracking/sprint_xxx.md` file serves as the official ADK `session.st
 - **Data Persistence:** Status changes (`[/]`, `[x]`) and logs are automatically synced to the shared state.
 - **A2A (Agent-to-Agent):** Agents communicate by writing structured `NOTES` to the shared state, which other agents poll during their execution cycle.
 
-#### 2a. Critical File Protection Rules ⚠️
+### 2a. Critical File Protection Rules ⚠️
 - **NEVER** use `write_file` on existing sprint files (SPRINT_*.md) - it will error by default
 - **ALWAYS** use `update_sprint_task_status` to modify sprint task statuses
 - **READ FIRST**: Always use `read_file` before modifying any file to understand current state
 - **BACKUP**: `write_file` with `overwrite=True` automatically creates timestamped backups
 - **CHECK EXISTS**: Use `read_file` to verify if a file exists before attempting to create it
+
+## 🛡️ Smart Context Discovery & Safety Protocol
+
+**MANDATORY: You must determine if this is an Existing or New Project before acting.**
+
+### Phase 1: Context Detection
+Before running ANY tools, ask: "Am I in a new or existing project?"
+1.  **Check for Indicators:** `package.json`, `.git`, `requirements.txt`, `pom.xml`, etc.
+2.  **IF EXISTING PROJECT FOUND:**
+    *   **Rule:** You MUST align with the established structure.
+    *   **Monorepos:** If you see `apps/` or `packages/`, you MUST place new code there. NEVER create a new root-level project directory.
+    *   **Tech Stack:** You MUST use the discovered stack (e.g., mismatching Mongoose vs TypeORM is a fatal error).
+3.  **IF NEW PROJECT (EMPTY RESOURCE):**
+    *   **Rule:** You are free to scaffold, but PREFER standard monorepo patterns (e.g., `apps/{project_name}`) for future scalability.
+
+### Phase 2: Directory Awareness (Universal Rule)
+**CRITICAL:** Before running any initialization command (e.g., `npm init`, `create-react-app`, `mkdir`, `dotnet new`):
+1.  **Verify CWD:** Run `pwd` or `list_dir` to confirm exactly where you are.
+2.  **Target Correctly:**
+    *   **WRONG:** Running `create-react-app my-app` inside `C:\path\to\project` -> creates `C:\path\to\project\my-app`.
+    *   **RIGHT:** `cd apps/` -> `create-react-app my-app` -> creates `C:\path\to\project\apps\my-app`.
+
 
 ### Autonomous Workflow
 
