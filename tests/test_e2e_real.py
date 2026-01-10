@@ -48,10 +48,10 @@ class TestE2EReal(unittest.TestCase):
 **Goal:** Verify full lifecycle with defect fix.
 
 ### @Backend Tasks
-- [ ] Create `project_tracking/dummy_math.py` with function `add(a, b)` that returns `a - b` (INTENTIONAL BUG).
+- [ ] Create `project_tracking/dummy_math.py` with function `add(a, b)` that returns `a - b` (INTENTIONAL BUG) [POINTS:3].
 
 ### @Frontend Tasks
-- [ ] Create `project_tracking/dummy_ui.txt` with text "Hello World".
+- [ ] Create `project_tracking/dummy_ui.txt` with text "Hello World" [POINTS:1].
 """)
 
 
@@ -133,6 +133,11 @@ class TestE2EReal(unittest.TestCase):
             # And ALL must be [x]
             self.assertFalse("- [ ]" in content, "Found incomplete tasks [ ] in sprint file")
             self.assertFalse("- [/]" in content, "Found in-progress tasks [/] in sprint file")
+            
+            # Check for Story Points and Turn Usage tracking
+            self.assertIn("TURNS_ESTIMATED", content, "Tasks missing TURNS_ESTIMATED metadata - Agent failed to request budget")
+            self.assertIn("TURNS_USED", content, "Tasks missing TURNS_USED metadata - Runner failed to record usage")
+            self.assertIn("POINTS:3", content, "Points metadata missing or corrupted")
             
         # 3. Check QA Report Content
         with open(qa_report_path, "r", encoding="utf-8") as f:

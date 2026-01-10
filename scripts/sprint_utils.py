@@ -8,7 +8,7 @@ def detect_latest_sprint_file(sprint_dir: str):
         
     sprint_files = [
         f for f in os.listdir(sprint_dir) 
-        if f.startswith("SPRINT_") and f.endswith(".md") and "REPORT" not in f
+        if f.startswith("SPRINT_") and f.endswith(".md") and "REPORT" not in f and "TEST_PLAN" not in f
     ]
     if not sprint_files:
         return None

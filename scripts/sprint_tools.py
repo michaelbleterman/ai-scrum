@@ -4,6 +4,7 @@ import subprocess
 import logging
 import functools
 from google.adk.tools import FunctionTool
+from sprint_utils import detect_latest_sprint_file
 
 # --- Tool Logging Decorator ---
 def log_tool_usage(func):
@@ -607,6 +608,145 @@ async def enrich_task_context(task_description: str, context_data: dict, sprint_
     
     return "Error: Failed to enrich task"
 
+# --- Turn Budget Management Tools ---
+
+from sprint_metadata import parse_task_metadata, update_task_metadata_in_file
+
+@log_tool_usage
+def request_turn_budget(task_description: str, estimated_turns: int, justification: str) -> dict:
+    """
+    Agent requests turn budget for a task they're about to execute.
+    
+    Args:
+        task_description: The task being estimated
+        estimated_turns: Number of turns agent thinks it needs (minimum 20)
+        justification: Why this many turns are needed
+    
+    Returns:
+        Approved turn budget
+    """
+    from sprint_config import SprintConfig
+    
+    # Enforce minimum
+    approved_turns = max(20, estimated_turns)
+    
+    # Update task in sprint file with metadata
+    sprint_file = detect_latest_sprint_file(SprintConfig.get_sprint_dir())
+    updated = update_task_metadata_in_file(
+        sprint_file,
+        task_description,
+        {"TURNS_ESTIMATED": approved_turns}
+    )
+    
+    return {
+        "task": task_description[:60],
+        "requested": estimated_turns,
+        "approved": approved_turns,
+        "justification": justification,
+        "status": "approved" if updated else "warning: task not found in sprint file"
+    }
+
+
+@log_tool_usage
+def record_turn_usage(task_description: str, turns_used: int) -> dict:
+    """
+    Record actual turns used after task completion.
+    Called automatically by runner.
+    
+    Args:
+        task_description: The completed task
+        turns_used: Actual number of turns consumed
+    
+    Returns:
+        Confirmation of recording
+    """
+    from sprint_config import SprintConfig
+    
+    sprint_file = detect_latest_sprint_file(SprintConfig.get_sprint_dir())
+    updated = update_task_metadata_in_file(
+        sprint_file,
+        task_description,
+        {"TURNS_USED": turns_used}
+    )
+    
+    logger = logging.getLogger("SprintRunner")
+    logger.info(f"[Turn Tracking] Task used {turns_used} turns")
+    
+    return {
+        "task": task_description[:60],
+        "turns_used": turns_used,
+        "status": "recorded" if updated else "error: task not found"
+    }
+
+
+@log_tool_usage
+def analyze_turn_metrics(sprint_file: str = None) -> dict:
+    """
+    Analyze turn usage vs. story points for retrospective.
+    
+    Args:
+        sprint_file: Path to sprint file (optional, uses current if not provided)
+    
+    Returns:
+        Statistics and insights about turn usage
+    """
+    from sprint_config import SprintConfig
+    from sprint_utils import get_all_sprint_tasks
+    
+    if not sprint_file:
+        sprint_file = detect_latest_sprint_file(SprintConfig.get_sprint_dir())
+    
+    tasks = get_all_sprint_tasks(sprint_file)
+    
+    stats = {
+        "tasks_analyzed": 0,
+        "avg_points": 0,
+        "avg_turns_used": 0,
+        "avg_turns_per_point": 0,
+        "underestimated": [],
+        "overestimated": [],
+        "accurate": [],
+        "details": []
+    }
+    
+    analyzed = []
+    for task in tasks:
+        points = parse_task_metadata(task.get('desc', ''), 'POINTS')
+        used = parse_task_metadata(task.get('desc', ''), 'TURNS_USED')
+        estimated = parse_task_metadata(task.get('desc', ''), 'TURNS_ESTIMATED')
+        
+        if points and used:
+            variance = ((used - estimated) / estimated * 100) if estimated else 0
+            
+            analyzed.append({
+                'task': task['desc'][:60],
+                'role': task.get('role'),
+                'points': points,
+                'estimated': estimated or 'N/A',
+                'used': used,
+                'variance': f"{variance:.1f}%" if estimated else 'N/A'
+            })
+            
+            if estimated and variance > 25:
+                stats['underestimated'].append(task['desc'][:60])
+            elif estimated and variance < -25:
+                stats['overestimated'].append(task['desc'][:60])
+            elif estimated:
+                stats['accurate'].append(task['desc'][:60])
+    
+    if analyzed:
+        stats['tasks_analyzed'] = len(analyzed)
+        total_points = sum(t['points'] for t in analyzed)
+        total_turns = sum(t['used'] for t in analyzed)
+        
+        stats['avg_points'] = round(total_points / len(analyzed), 1)
+        stats['avg_turns_used'] = round(total_turns / len(analyzed), 1)
+        stats['avg_turns_per_point'] = round(total_turns / total_points, 1) if total_points else 0
+        stats['details'] = analyzed
+    
+    return stats
+
+
 # Tool Definitions for Agent Consumption
 worker_tools = [
                      FunctionTool(list_dir),
@@ -615,9 +755,13 @@ worker_tools = [
                      FunctionTool(run_command),
                      FunctionTool(search_codebase),
                      FunctionTool(discover_project_context),
-                     FunctionTool(enrich_task_context)
+                     FunctionTool(enrich_task_context),
+                     FunctionTool(request_turn_budget),
+                     FunctionTool(record_turn_usage)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]
 
 qa_tools = worker_tools + [FunctionTool(add_sprint_task)]
+
+pm_tools = worker_tools + [FunctionTool(add_sprint_task), FunctionTool(analyze_turn_metrics)]

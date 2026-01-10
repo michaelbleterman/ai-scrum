@@ -192,6 +192,22 @@ The Orchestrator gathers the results of all parallel branches once they transiti
 *   **@QA** / **@Security** → [Validation](agent_qa.md)
 
 
+## ⚖️ Turn Budget Protocol
+
+**MANDATORY:** Before starting any turn-intensive task (coding, testing, large research), you must request a turn budget.
+
+1. **Calculate Needs:** Estimate the complexity of the task.
+   - Simple (e.g., config change): 20 turns
+   - Moderate (e.g., new file): 40 turns
+   - Complex (e.g., full feature): 60 turns
+   - Story/Epic: 100 turns
+
+2. **Request Budget:** Call `request_turn_budget(task_description="...", estimated_turns=N, justification="...")`.
+   - **Do this in your very first turn** after picking up the task.
+   - The runner will approve and dynamically update your limit.
+
+3. **Monitor Usage:** Work efficiently. If you are running out of turns, simplify your approach or mark as BLOCKED.
+
 ##  Tool Usage Guidelines
 
 - **search_codebase**: Use this to find relevant files before reading them. Do not 

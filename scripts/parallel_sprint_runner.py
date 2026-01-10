@@ -12,8 +12,17 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 
 # Import Config and Modules
 from sprint_config import SprintConfig
-from sprint_tools import worker_tools, orchestrator_tools, qa_tools, update_sprint_task_status, update_sprint_header
+from sprint_tools import (
+    worker_tools, 
+    orchestrator_tools, 
+    qa_tools, 
+    pm_tools,
+    record_turn_usage, 
+    update_sprint_task_status, 
+    update_sprint_header
+)
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
+from sprint_metadata import parse_task_metadata
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -281,19 +290,19 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     @retry_decorator
                     async def run_agent():
                         turn_count = 0
-                        max_turns = 20
+                        # Initialize budget from metadata if available, else default
+                        initial_budget = parse_task_metadata(desc, 'TURNS_ESTIMATED', default=20)
+                        max_turns = initial_budget
+                        log(f"    [Agent {role_raw}] Starting with budget: {max_turns} turns")
+                        
                         async for event in runner.run_async(
                             user_id="user", 
                             session_id=worker_pid, 
                             new_message=types.Content(parts=[types.Part(text=f"Execute this task: {desc}")])
                         ):
                             turn_count += 1
-                            if turn_count > max_turns:
-                                msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
-                                logger.error(msg)
-                                print(msg) # Print to stdout for test capture
-                                break
-
+                            
+                            # Check for budget updates from tool calls
                             if event.content and event.content.parts:
                                 for part in event.content.parts:
                                     if part.text:
@@ -304,15 +313,49 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                                         msg = f"[Agent {role_raw}] Call: {part.function_call.name}({part.function_call.args})"
                                         logger.info(msg)
                                         print(msg)
+                                        
+                                        # Dynamic Budget Update
+                                        if part.function_call.name == "request_turn_budget":
+                                            try:
+                                                # args is a dict or struct, need to parse
+                                                args = part.function_call.args
+                                                if isinstance(args, dict):
+                                                    est = args.get('estimated_turns', 20)
+                                                else:
+                                                    # Handle proto Struct conversion if needed
+                                                    est = args['estimated_turns']
+                                                
+                                                approved_turns = max(20, int(est))
+                                                max_turns = approved_turns
+                                                log(f"    [Agent {role_raw}] Budget UPDATED to {max_turns} turns")
+                                            except Exception as ex:
+                                                logger.error(f"Failed to parse turn budget update: {ex}")
+
+                            if turn_count > max_turns:
+                                msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
+                                logger.error(msg)
+                                print(msg) # Print to stdout for test capture
+                                raise RuntimeError(f"Task exceeded max turns ({max_turns})")
+
+                        return turn_count
 
                     try:
-                        await run_agent()
-                        log(f"    [Task {task_index+1}] Completed @{role_raw}")
+                        actual_turns = await run_agent()
+                        log(f"    [Task {task_index+1}] Completed @{role_raw} in {actual_turns} turns")
+                        
+                        # Record actual usage
+                        record_turn_usage(desc, actual_turns)
+                        
                         # DIRECT UPDATE: Mark done
                         await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
 
                     except Exception as e:
                         log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                        # Record partial usage (best effort)
+                        # Note: We can't easily get partial turn count here as it's local to run_agent
+                        # Unless run_agent returns it in exception or we track it externally.
+                        # For now, we skip partial recording on failure or implement retry logic
+                        
                         # Track failure for retry limit
                         task_retry_tracker[desc] = task_retry_tracker.get(desc, 0) + 1
                         # Mark as blocked if it fails
@@ -373,38 +416,24 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
         qa_instruction = "You are the QA Engineer."
 
     qa_full_instruction = (
-        f"{framework_instruction}\n\n{qa_instruction}\n\nTasks to Verify:\n{task_list_str}\n\n"
-        "INSTRUCTIONS:\n"
-        "1. For each task, generate and run E2E/Playwright/Unit tests to verify it.\n"
-        "2. If a task fails verification, use the `add_sprint_task` tool to create a NEW task with description starting with 'DEFECT: ...'.\n"
-        "3. Write a summary report to 'project_tracking/QA_REPORT.md'.\n"
-        "   - If all tasks pass, include 'Status: PASSED' in the report.\n"
-        "   - If any tasks fail, include 'Status: FAILED' and list the failures.\n"
-        "4. If all validations pass, explicitly state 'ALL PASSED' in your final response."
+        f"{framework_instruction}\n\n{qa_instruction}\n\n"
+        f"Tasks to Verify:\n{task_list_str}\n\n"
+        "Execute the QA workflow defined in your agent prompt for the above tasks."
     )
 
-    # --- Pre-QA: DevOps Environment Setup ---
-    log("    [QA Phase] Initializing Environment Setup (DevOps)...")
-    devops_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops.md")
-    if os.path.exists(devops_prompt_path):
-        with open(devops_prompt_path, "r", encoding="utf-8") as f:
-             devops_instruction = f.read()
+    # Load DevOps QA Setup prompt
+    devops_qa_setup_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops_qa_setup.md")
+    if os.path.exists(devops_qa_setup_prompt_path):
+        with open(devops_qa_setup_prompt_path, "r", encoding="utf-8") as f:
+            devops_setup_instruction = f.read()
     else:
-        devops_instruction = "You are the DevOps Engineer."
+        devops_setup_instruction = "Prepare the test environment for QA execution."
 
-    devops_setup_instruction = (
-        f"{framework_instruction}\n\n{devops_instruction}\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Prepare the test environment for QA execution.\n"
-        "2. Ensure the application is up and running on the expected local port.\n"
-        "3. Verify all services are healthy.\n"
-        "4. **DO NOT** delete or reset the database. Tests expect existing state.\n"
-        "5. Respond with 'Environment Ready' when complete."
-    )
+    devops_full_instruction = f"{framework_instruction}\n\n{devops_setup_instruction}"
 
     devops_agent = agent_factory(
         name="DevOps_Setup",
-        instruction=devops_setup_instruction,
+        instruction=devops_full_instruction,
         tools=worker_tools,
         agent_role="DevOps"
     )
@@ -424,7 +453,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     @retry_decorator
     async def run_devops_setup():
         turn_count = 0
-        max_turns = 10
+        max_turns = 20  # Increased for complex operations like Docker builds
         async for event in devops_runner.run_async(
             user_id="user", 
             session_id=devops_pid, 
@@ -433,7 +462,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
             turn_count += 1
             if turn_count > max_turns:
                  log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
-                 break
+                 raise RuntimeError(f"DevOps setup exceeded max turns ({max_turns})")
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
@@ -479,7 +508,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
             turn_count += 1
             if turn_count > max_turns:
                  log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 break
+                 raise RuntimeError(f"QA verification exceeded max turns ({max_turns})")
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
@@ -502,12 +531,19 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
 async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None):
     log("\n[Phase 3] Demo & Feedback")
     
+    # Load Demo Orchestrator prompt
+    demo_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_orchestrator_demo.md")
+    if os.path.exists(demo_prompt_path):
+        with open(demo_prompt_path, "r", encoding="utf-8") as f:
+            demo_instruction = f.read()
+    else:
+        demo_instruction = "Prepare a Demo Walkthrough."
+
+    orchestrator_full_instruction = f"{framework_instruction}\n\n{demo_instruction}"
+    
     orchestrator_agent = agent_factory(
         name="Orchestrator",
-        instruction=f"{framework_instruction}\n\nYou are the Orchestrator. Goal: Prepare a Demo Walkthrough.\n"
-                    "1. Read the 'project_tracking/QA_REPORT.md'.\n"
-                    "2. Read the latest sprint file.\n"
-                    "3. Generate a 'project_tracking/DEMO_WALKTHROUGH.md' summarizing what was built and how to use it.\n",
+        instruction=orchestrator_full_instruction,
         tools=worker_tools,
         agent_role="Orchestrator"  # Use Pro model for coordination
     )
@@ -535,7 +571,7 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
             turn_count += 1
             if turn_count > max_turns:
                  log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 break
+                 raise RuntimeError(f"Demo walkthrough generation exceeded max turns ({max_turns})")
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
@@ -573,31 +609,23 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     log("\n[Phase 4] Retrospective")
     await update_sprint_header("Review", SprintConfig.get_sprint_dir())
     
-    pm_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_product_management.md")
-    if os.path.exists(pm_prompt_path):
-        with open(pm_prompt_path, "r", encoding="utf-8") as f:
-             pm_instruction = f.read()
+    # Load PM Retrospective prompt
+    retro_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_pm_retrospective.md")
+    if os.path.exists(retro_prompt_path):
+        with open(retro_prompt_path, "r", encoding="utf-8") as f:
+            pm_retro_instruction = f.read()
+            # Inject user feedback into the template
+            user_feedback_text = demo_feedback if demo_feedback else "None provided."
+            pm_retro_instruction = pm_retro_instruction.replace("{user_feedback}", user_feedback_text)
     else:
-        pm_instruction = "You are the Product Manager."
+        pm_retro_instruction = "Conduct sprint retrospective."
 
-    user_feedback_section = f"\nUser Feedback from Demo: {demo_feedback}\n" if demo_feedback else "\nUser Feedback from Demo: None provided.\n"
-
-    pm_full_instruction = (
-        f"{framework_instruction}\n\n{pm_instruction}\n\n"
-        f"{user_feedback_section}\n"
-        "INSTRUCTIONS:\n"
-        "1. Read 'project_tracking/QA_REPORT.md' and 'project_tracking/DEMO_WALKTHROUGH.md'.\n"
-        "2. Generate 'project_tracking/SPRINT_REPORT.md' with a retrospective analysis.\n"
-        "   - Include a '## Retrospective' section discussing what went well, what didn't, and lessons learned.\n"
-        "   - Summarize sprint outcomes and key metrics.\n"
-        "3. Parse the User Feedback and any outstanding issues.\n"
-        "4. Append new Action Items or User Stories to 'project_tracking/backlog.md'.\n"
-    )
+    pm_full_instruction = f"{framework_instruction}\n\n{pm_retro_instruction}"
 
     pm_agent = agent_factory(
         name="ProductManager",
         instruction=pm_full_instruction,
-        tools=worker_tools,
+        tools=pm_tools,
         agent_role="PM"  # Use Flash model for quality requirements
     )
     
@@ -624,7 +652,7 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
             turn_count += 1
             if turn_count > max_turns:
                  log(f"[PM] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 break
+                 raise RuntimeError(f"Retrospective exceeded max turns ({max_turns})")
              
     await run_retro()
     log("    Retrospective complete. Reports generated and Backlog updated.")

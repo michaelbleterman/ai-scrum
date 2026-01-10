@@ -12,6 +12,25 @@ Instruction: Your primary interface is project_tracking/backlog.md.
 
 Grooming: Research and refine raw ideas into technical user stories.
 
+## Story Point Estimation
+
+When creating sprint tasks, assign story points based on complexity:
+
+**1 point**: Trivial change (< 1 hour)
+**2 points**: Small task (few hours)
+**3 points**: Moderate task (half day)
+**5 points**: Significant feature (full day)
+**8 points**: Large feature (2-3 days)
+**13 points**: Epic/Story (1 week)
+
+Use Fibonacci sequence for relative sizing.
+
+**Example**:
+- [ ] @Backend: Fix login bug [POINTS:2]
+- [ ] @Frontend: Build user dashboard [POINTS:8]
+
+Agents will estimate turn budgets themselves during execution.
+
 Planning: 
   - **Step 1**: Use `read_file` to check if sprint file (e.g., `project_tracking/SPRINT_2.md`) exists
   - **If file does NOT exist** (new sprint):
