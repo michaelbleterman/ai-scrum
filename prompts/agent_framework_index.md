@@ -155,7 +155,7 @@ Before running ANY tools, ask: "Am I in a new or existing project?"
     *   **Monorepos:** If you see `apps/` or `packages/`, you MUST place new code there. NEVER create a new root-level project directory.
     *   **Tech Stack:** You MUST use the discovered stack (e.g., mismatching Mongoose vs TypeORM is a fatal error).
 3.  **IF NEW PROJECT (EMPTY RESOURCE):**
-    *   **Rule:** You are free to scaffold, but PREFER standard monorepo patterns (e.g., `apps/{project_name}`) for future scalability.
+    *   **Rule:** You are free to scaffold, but PREFER standard monorepo patterns (e.g., `apps/[project-name]`) for future scalability.
 
 ### Phase 2: Directory Awareness (Universal Rule)
 **CRITICAL:** Before running any initialization command (e.g., `npm init`, `create-react-app`, `mkdir`, `dotnet new`):
