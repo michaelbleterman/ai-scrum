@@ -91,7 +91,10 @@ def write_file(path: str, content: str, overwrite: bool = False):
         #     shutil.copy2(path, backup_path)
         #     logger.warning(f"[OVERWRITE] Backed up {path} to {backup_path}")
         
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dirname = os.path.dirname(path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+            
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully wrote to {path}"

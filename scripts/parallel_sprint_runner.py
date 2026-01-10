@@ -291,8 +291,8 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     async def run_agent():
                         turn_count = 0
                         # Initialize budget from metadata if available, else default
-                        initial_budget = parse_task_metadata(desc, 'TURNS_ESTIMATED', default=20)
-                        max_turns = initial_budget
+                        initial_budget = parse_task_metadata(desc, 'TURNS_ESTIMATED', default=40)
+                        max_turns = max(40, initial_budget)
                         log(f"    [Agent {role_raw}] Starting with budget: {max_turns} turns")
                         
                         async for event in runner.run_async(
@@ -453,7 +453,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     @retry_decorator
     async def run_devops_setup():
         turn_count = 0
-        max_turns = 20  # Increased for complex operations like Docker builds
+        max_turns = 40  # Increased for complex operations like Docker builds
         async for event in devops_runner.run_async(
             user_id="user", 
             session_id=devops_pid, 
@@ -499,7 +499,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     async def run_qa():
         nonlocal defects_created
         turn_count = 0
-        max_turns = 20
+        max_turns = 40
         async for event in runner.run_async(
             user_id="user", 
             session_id=qa_pid, 
@@ -643,7 +643,7 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     @retry_decorator
     async def run_retro():
         turn_count = 0
-        max_turns = 20
+        max_turns = 40
         async for event in runner.run_async(
             user_id="user", 
             session_id="retro_session", 

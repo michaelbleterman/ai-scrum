@@ -104,7 +104,7 @@ Write comprehensive report to `project_tracking/QA_REPORT.md`:
 
 ## Turn Budget Awareness
 
-You have a maximum of 20 turns to complete QA verification:
+You have a maximum of 40 turns to complete QA verification:
 - **Prioritize investigation over blind retries**
 - Spend turns strategically: environment check → test → investigate failures
 - Don't waste turns on repeated identical failures

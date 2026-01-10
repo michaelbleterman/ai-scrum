@@ -2,6 +2,7 @@
 
 import os
 import re
+import difflib
 
 def parse_task_metadata(task_desc: str, key: str, default=None):
     """
@@ -36,7 +37,7 @@ def parse_task_metadata(task_desc: str, key: str, default=None):
 
 def update_task_metadata_in_file(sprint_file: str, task_desc: str, new_metadata: dict) -> bool:
     """
-    Update task metadata in sprint file.
+    Update task metadata in sprint file using fuzzy matching.
     
     Args:
         sprint_file: Path to sprint markdown file
@@ -49,52 +50,91 @@ def update_task_metadata_in_file(sprint_file: str, task_desc: str, new_metadata:
     if not os.path.exists(sprint_file):
         return False
     
-    with open(sprint_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # Read all lines
+    try:
+        with open(sprint_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        return False
     
-    # Find task line - match first 30 chars to avoid metadata in search
-    # Find task line - match first 30 chars to avoid metadata in search
-    task_search = re.escape(task_desc[:50])
+    # Clean up the input task description for comparison
+    # Remove metadata, bullets, extra whitespace, quotes
+    clean_search = re.sub(r'\[.*?\]', '', task_desc)
+    clean_search = re.sub(r'^[\s\-\*]+', '', clean_search)
+    clean_search = re.sub(r'[\'"`]', '', clean_search).strip().lower()
     
-    # Regex explanation:
-    # 1. Start of line (whitespace optional) + bullet + status: ^\s*-\s*\[[x /!]\].*?
-    # 2. The task text containing our search term
-    # 3. Optional existing metadata at end of line
-    # 4. End of line
-    pattern = rf'(^\s*-\s*\[[x /!]\]\s*)(.*?{task_search}.*?)(\s*\[.*?\])?(\s*)$'
+    best_ratio = 0.0
+    best_idx = -1
     
-    def replace_metadata(match):
-        prefix = match.group(1)  # - [x] 
-        task_text = match.group(2)  # Task description
-        existing_metadata = match.group(3) or ''  # [POINTS:8|...]
-        line_end = match.group(4)  # Whitespace/Newline
+    # 1. Fuzzy Match Phase
+    for i, line in enumerate(lines):
+        # Only check lines that look like tasks
+        if not re.match(r'^\s*-\s*\[[x /!]\]', line):
+            continue
+            
+        # Clean up the line content
+        clean_line = re.sub(r'\[.*?\]', '', line) # remove existing metadata
+        clean_line = re.sub(r'^\s*-\s*\[[x /!]\]', '', clean_line) # remove checkmark
+        clean_line = re.sub(r'[\'"`]', '', clean_line).strip().lower()
         
-        # Parse existing metadata
-        metadata_dict = {}
-        if existing_metadata:
-            metadata_str = existing_metadata.strip().strip('[]')
-            for pair in metadata_str.split('|'):
-                if ':' in pair:
-                    k, v = pair.split(':', 1)
-                    metadata_dict[k.strip()] = v.strip()
+        # Calculate similarity
+        ratio = difflib.SequenceMatcher(None, clean_search, clean_line).ratio()
         
-        # Update with new metadata
-        metadata_dict.update({k: str(v) for k, v in new_metadata.items()})
+        # Boost ratio if one is substring of other
+        if clean_search in clean_line or clean_line in clean_search:
+            ratio = max(ratio, 0.85)
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx = i
+            
+    # Threshold for match acceptance (0.6 is loose but safe given context)
+    if best_ratio < 0.6:
+        return False
         
-        # Rebuild metadata string
-        metadata_pairs = [f"{k}:{v}" for k, v in metadata_dict.items()]
-        new_metadata_str = f" [{('|'.join(metadata_pairs))}]" if metadata_pairs else ''
-        
-        # Remove existing metadata from task_text if present (double cleanup)
-        task_text = re.sub(r'\s*\[.*?\]\s*$', '', task_text).strip()
-        
-        return f"{prefix}{task_text}{new_metadata_str}{line_end}"
+    # 2. Update Phase
+    target_line = lines[best_idx]
     
-    updated_content = re.sub(pattern, replace_metadata, content, flags=re.MULTILINE)
+    # Extract parts: Prefix, Content, Metadata, Suffix
+    # Regex: (Prefix)(Content)(Metadata?)(Whitespace)
+    match = re.match(r'(^\s*-\s*\[[x /!]\]\s*)(.*?)(\s*\[.*?\])?(\s*)$', target_line)
     
-    if updated_content != content:
+    if not match:
+        # Fallback if regex fails on the specific line (unlikely given check above)
+        return False
+        
+    prefix = match.group(1)
+    task_text = match.group(2)
+    existing_metadata = match.group(3) or ''
+    line_end = match.group(4).strip('\n') # keep mostly just newline at end logic handled below explicitly
+    
+    # Parse existing metadata
+    metadata_dict = {}
+    if existing_metadata:
+        metadata_str = existing_metadata.strip().strip('[]')
+        for pair in metadata_str.split('|'):
+            if ':' in pair:
+                k, v = pair.split(':', 1)
+                metadata_dict[k.strip()] = v.strip()
+    
+    # Update with new metadata
+    metadata_dict.update({k: str(v) for k, v in new_metadata.items()})
+    
+    # Rebuild metadata string
+    metadata_pairs = [f"{k}:{v}" for k, v in metadata_dict.items()]
+    new_metadata_str = f" [{('|'.join(metadata_pairs))}]" if metadata_pairs else ''
+    
+    # Remove existing metadata from task_text if present in group 2 (double cleanup)
+    task_text = re.sub(r'\s*\[.*?\]\s*$', '', task_text).strip()
+    
+    # Construct new line
+    new_line = f"{prefix}{task_text}{new_metadata_str}\n"
+    
+    if new_line != target_line:
+        lines[best_idx] = new_line
         with open(sprint_file, 'w', encoding='utf-8') as f:
-            f.write(updated_content)
+            f.writelines(lines)
         return True
     
-    return False
+    # Even if content didn't change, we found the task, so return True
+    return True
