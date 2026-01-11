@@ -13,6 +13,8 @@ sys.path.append(os.path.join(base_dir, "scripts"))
 from google.adk.agents import LlmAgent
 from scripts.parallel_sprint_runner import SprintRunner
 from scripts.sprint_config import SprintConfig
+from unittest.mock import patch
+import scripts.sprint_tools
 
 class TestE2EReal(unittest.TestCase):
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,6 +22,11 @@ class TestE2EReal(unittest.TestCase):
     TEST_SPRINT_FILE = os.path.join(SPRINT_DIR, "SPRINT_E2E.md")
     
     def setUp(self):
+        # Recursion Guard
+        if os.environ.get("ADK_E2E_RECURSION_GUARD"):
+            print("Skipping recursive execution of E2E test")
+            raise unittest.SkipTest("Recursive E2E test execution skipped")
+        
         # Ensure the sprint directory exists
         if not os.path.exists(self.SPRINT_DIR):
             os.makedirs(self.SPRINT_DIR)
@@ -78,15 +85,28 @@ class TestE2EReal(unittest.TestCase):
                     model = SprintConfig.MODEL_NAME
             return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
-        runner = SprintRunner(agent_factory=agent_factory, input_callback=mock_input)
+        # Mock Context Discovery to ensure agents don't get confused by the root repo
+        mock_context = {
+            "tech_stack": ["Python"],
+            "languages": {"Python": 100},
+            "package_managers": ["pip"],
+            "key_files": ["requirements.txt"],
+            "primary_language": "Python"
+        }
         
-        # Run the cycle with exit code handling
-        try:
-            asyncio.run(runner.run_cycle())
-        except asyncio.CancelledError:
-            print("[Test] Execution cancelled gracefully.")
-        except Exception as e:
-            self.fail(f"Execution failed with exception: {e}")
+        # Patch discover_project_context in sprint_tools
+        with patch('scripts.sprint_tools.discover_project_context', return_value=str(mock_context)):
+            runner = SprintRunner(agent_factory=agent_factory, input_callback=mock_input)
+            
+            # Run the cycle with exit code handling
+            try:
+                # Set guard for child processes (agents)
+                os.environ["ADK_E2E_RECURSION_GUARD"] = "1"
+                asyncio.run(runner.run_cycle())
+            except asyncio.CancelledError:
+                print("[Test] Execution cancelled gracefully.")
+            except Exception as e:
+                self.fail(f"Execution failed with exception: {e}")
         
         # --- CONTEXT DISCOVERY VALIDATION ---
         print("\n[Test] Validating context discovery...")

@@ -6,6 +6,9 @@ import functools
 from google.adk.tools import FunctionTool
 from sprint_utils import detect_latest_sprint_file
 
+# Global registry for background processes
+_background_processes = {}
+
 # --- Tool Logging Decorator ---
 def log_tool_usage(func):
     @functools.wraps(func)
@@ -102,18 +105,23 @@ def write_file(path: str, content: str, overwrite: bool = False):
         return f"Error: {e}"
 
 @log_tool_usage
-def run_command(command: str):
-    """Executes a shell command and returns the output."""
+def run_command(command: str, background: bool = False):
+    """
+    Executes a shell command.
+    
+    Args:
+        command: The shell command to run.
+        background: If True, runs the command in the background and returns the PID immediately.
+                    Use this for starting servers or long-running tasks (e.g., 'npm start', 'npm run dev').
+                    Output will be logged to a file but not returned.
+    """
     try:
         # Helper to fix common cross-platform command issues
         if "mkdir -p" in command:
-            # On Windows, 'mkdir' creates intermediates by default (in cmd) but 'mkdir -p' fails.
-            # In PowerShell 'mkdir' is a function 'md'.
-            # We can strip '-p'.
             command = command.replace("mkdir -p", "mkdir")
             
         logger = logging.getLogger("SprintRunner")
-        logger.info(f"[Tool:run_command] Executing: {command}")
+        logger.info(f"[Tool:run_command] Executing: {command} (background={background})")
         
         # PAGER=cat to avoid hanging on long output
         env = os.environ.copy()
@@ -123,15 +131,66 @@ def run_command(command: str):
         env["npm_config_yes"] = "true" 
         env["PIP_NO_INPUT"] = "1"
         env["NON_INTERACTIVE"] = "true"
-        # Timeout added to prevent hangs
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env, timeout=30)
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.returncode
-        }
+
+        if background:
+            # Run in background using Popen
+            # Redirect output to a log file to avoid pipe buffer issues
+            # Using shell=True for complex commands
+            log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, f"cmd_{int(os.urandom(4).hex(), 16)}.log")
+            
+            with open(log_file, "w") as out_f:
+                process = subprocess.Popen(
+                    command, 
+                    shell=True, 
+                    stdout=out_f, 
+                    stderr=subprocess.STDOUT, 
+                    env=env
+                )
+            
+            pid = process.pid
+            _background_processes[pid] = process
+            return {
+                "status": "background_process_started",
+                "pid": pid,
+                "message": f"Command started in background with PID {pid}. Logs at {log_file}. Use kill_process({pid}) to stop it."
+            }
+
+        else:
+            # Timeout added to prevent hangs
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env, timeout=30)
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode
+            }
+    except subprocess.TimeoutExpired:
+        return f"Error: Command timed out after 30 seconds. If this is a long-running task, set 'background=True'."
     except Exception as e:
         return f"Error: {e}"
+
+@log_tool_usage
+def kill_process(pid: int):
+    """
+    Terminates a background process started by run_command.
+    """
+    try:
+        process = _background_processes.get(pid)
+        if not process:
+            return f"Error: No background process found with PID {pid}"
+        
+        process.terminate()
+        # Give it a moment to die gracefully
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill() # Force kill
+            
+        del _background_processes[pid]
+        return f"Successfully terminated process {pid}"
+    except Exception as e:
+        return f"Error terminating process {pid}: {e}"
 
 
 @log_async_tool_usage
@@ -317,8 +376,8 @@ async def add_sprint_task(role: str, task_description: str, sprint_dir: str = "p
     Adds a new task to the latest sprint file under the specified role section.
     Args:
         role (str): The role section to add to (e.g., "Backend", "Frontend").
-        task_description (str): The description of the new task.
-        sprint_dir (str): Directory containing sprint files.
+        task_description: The description of the new task.
+        sprint_dir: Directory containing sprint files.
     """
     # Fix for path
     if not os.path.isabs(sprint_dir):
@@ -756,6 +815,7 @@ worker_tools = [
                      FunctionTool(read_file),
                      FunctionTool(write_file),
                      FunctionTool(run_command),
+                     FunctionTool(kill_process),
                      FunctionTool(search_codebase),
                      FunctionTool(discover_project_context),
                      FunctionTool(enrich_task_context),

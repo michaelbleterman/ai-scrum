@@ -24,3 +24,18 @@
 ## 🚀 Next Steps
 - Transition from mock scripts to real technical boilerplate (FastAPI for Backend, React for Frontend).
 - Update the backlog to prioritize environment setup and architecture definition for Sprint 3.
+
+### Orchestrator Tasks
+- [ ] DEFECT: Application source code is missing from the project_tracking directory. QA is blocked.
+
+### Orchestrator Tasks
+- [ ] DEFECT: `sprint_2` branch was not created as per task TD-1.1.
+
+### DevOps Tasks
+- [ ] DEFECT: `.env.example` files are missing. The `apps/backend` and `apps/frontend` directories also do not exist. Project structure seems to be different than expected.
+
+### DevOps Tasks
+- [ ] DEFECT: The `docs/ARCHITECTURE.md` file was not found. The `docs` directory does not exist.
+
+### Orchestrator Tasks
+- [ ] DEFECT: Incorrect branch checked out. Expected `sprint_2` but found `error-handling-resume`.

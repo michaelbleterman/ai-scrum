@@ -216,7 +216,11 @@ ead_file blindly.
 - **run_command**: 
     - Always verify the command is safe.
     - Capturing output is automatic.
+    - **Background Processes**: Pass `background=True` to run long-running processes (e.g., servers) without blocking. Returns a PID.
     - If a command fails, READ THE ERROR and correct it.
+- **kill_process**:
+    - Use this to stop ANY background process started with `run_command(..., background=True)`.
+    - Always clean up background processes (like servers) before finishing your task.
 
 ##  Verification Protocol
 Before marking any task as complete ([x]):

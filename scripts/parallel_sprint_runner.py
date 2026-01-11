@@ -292,8 +292,9 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         turn_count = 0
                         # Initialize budget from metadata if available, else default
                         initial_budget = parse_task_metadata(desc, 'TURNS_ESTIMATED', default=40)
-                        max_turns = max(40, initial_budget)
-                        log(f"    [Agent {role_raw}] Starting with budget: {max_turns} turns")
+                        soft_limit = max(40, initial_budget)
+                        hard_limit = soft_limit * 2  # Progressive limit: 2x safety buffer
+                        log(f"    [Agent {role_raw}] Starting with soft limit: {soft_limit}, hard limit: {hard_limit}")
                         
                         async for event in runner.run_async(
                             user_id="user", 
@@ -325,17 +326,26 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                                                     # Handle proto Struct conversion if needed
                                                     est = args['estimated_turns']
                                                 
-                                                approved_turns = max(20, int(est))
-                                                max_turns = approved_turns
-                                                log(f"    [Agent {role_raw}] Budget UPDATED to {max_turns} turns")
+                                                # Progressive limits: soft = estimate, hard = 2x
+                                                soft_limit = max(20, int(est))
+                                                hard_limit = soft_limit * 2
+                                                log(f"    [Agent {role_raw}] Budget UPDATED - Soft: {soft_limit}, Hard: {hard_limit}")
                                             except Exception as ex:
                                                 logger.error(f"Failed to parse turn budget update: {ex}")
 
-                            if turn_count > max_turns:
-                                msg = f"[Agent {role_raw}] EXCEEDED MAX TURNS ({max_turns}). Killing."
+                            # Progressive limit enforcement
+                            if turn_count > soft_limit and turn_count <= hard_limit:
+                                overage = turn_count - soft_limit
+                                remaining = hard_limit - turn_count
+                                msg = f"[Agent {role_raw}] ⚠️  WARNING: Exceeded estimate by {overage} turns, {remaining} turns until hard limit"
+                                logger.warning(msg)
+                                print(msg)
+                            
+                            if turn_count > hard_limit:
+                                msg = f"[Agent {role_raw}] ❌ EXCEEDED HARD LIMIT ({hard_limit}). Killing."
                                 logger.error(msg)
                                 print(msg) # Print to stdout for test capture
-                                raise RuntimeError(f"Task exceeded max turns ({max_turns})")
+                                raise RuntimeError(f"Task exceeded hard limit ({hard_limit})")
 
                         return turn_count
 
@@ -453,7 +463,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     @retry_decorator
     async def run_devops_setup():
         turn_count = 0
-        max_turns = 40  # Increased for complex operations like Docker builds
+        max_turns = 40  # Reverted: progressive limits handle buffers
         async for event in devops_runner.run_async(
             user_id="user", 
             session_id=devops_pid, 

@@ -23,60 +23,49 @@ This backlog tracks future enhancements and features for the Project.
     - *Acceptance Criteria:*
         - Frontend displays the result of `add(x, y)` from the backend.
         - User can input two numbers and see their sum.
-- **[ ] Story: Improve clarity in defect demonstration scenarios**
-    - *Description:* Enhance task definitions for intentional defects to explicitly state the initial incorrect code.
+- **[ ] Story: Implement Mandatory QA Report Generation**
+    - *Description:* Ensure a `QA_REPORT.md` is generated and completed for every sprint.
     - *Acceptance Criteria:*
-        - Task definitions for intentional defects explicitly state the initial incorrect code.
-        - QA reports clearly distinguish between a true defect fix and verification of pre-existing correct code.
-        - **(Added from Retrospective):** Include a pre-implementation clarification step and explicit bug confirmation in DoD for intentional bug tasks.
+        - `QA_REPORT.md` exists and contains metrics for each completed sprint.
+- **[ ] Story: Improve Sprint Task Status Tracking**
+    - *Description:* All agents must consistently and accurately update task statuses in the sprint file, including detailed blocker reasons.
+    - *Acceptance Criteria:*
+        - Sprint file tasks are always up-to-date with correct `[ ]`, `[/]`, `[x]`, or `[!]` statuses and blocker reasons.
+- **[ ] Story: Enforce Turn Budget Protocol**
+    - *Description:* Ensure all agents request and record turn budgets for their tasks.
+    - *Acceptance Criteria:*
+        - All tasks have an `estimated_turns` and `turns_used` recorded.
 
 ## 🟡 Medium Priority
 - **[ ] Story: CI/CD Pipeline Setup**
     - *Description:* Add GitHub Actions for automated testing.
 - **[ ] Story: Dockerization**
     - *Description:* Create Dockerfiles for both FE and BE.
-- **[ ] Process Improvement: Continuous Process Improvement and Refinement**
-    - *Description:* Regularly review and refine development and QA processes based on sprint retrospectives to maximize efficiency and quality.
+- **[ ] Task: Review and Refine "Full Lifecycle" Sprint Definition**
+    - *Description:* Update sprint definitions to explicitly include defect resolution, comprehensive QA, and formal reporting for "full lifecycle" sprints.
+    - *Description:* Improve the `analyze_turn_metrics` tool to ensure automated and accurate extraction of turn data from sprint files.
     - *Acceptance Criteria:*
-        - Retrospective action items are consistently implemented in subsequent sprints.
-        - Measurable improvements in sprint velocity or defect reduction over time.
-- **[ ] Feature Exploration: Explore Complex Features for Future Demos**
-    - *Description:* Research and propose more advanced features and integrations to showcase in upcoming sprint demos, building on the positive user feedback.
+        - The tool successfully parses turn estimation and usage from sprint files.
+        - Provides accurate statistics on turn usage deviations.
+- **[ ] Task: Refine Turn Estimation Process**
+    - *Description:* Investigate the reasons for overestimation of turns in the previous sprint and refine the turn estimation guidelines for future sprints.
     - *Acceptance Criteria:*
-        - A list of 2-3 complex feature ideas is generated for review.
-        - Each feature idea includes a high-level description and potential benefits for demo purposes.
-- **[ ] Process Improvement: Continuously monitor and refine turn estimations**
-    - *Description:* Regularly review actual vs. estimated turn usage to improve estimation accuracy for future sprints.
-    - *Acceptance Criteria:*
-        - Turn estimation accuracy shows a positive trend over subsequent sprints.
-        - A baseline turns-per-story-point metric is consistently tracked and refined.
-- **[ ] Process Improvement: Explore more complex features for future demonstration sprints**
-    - *Description:* Based on positive demo feedback, identify and plan for the inclusion of more sophisticated functionalities in upcoming E2E demonstration sprints.
-    - *Acceptance Criteria:*
-        - A proposal for 2-3 complex feature ideas is drafted for review.
-        - These features effectively showcase a broader range of the development lifecycle.
-- **[ ] Process Improvement: Review and update turn estimation guidelines**
-    - *Description:* Review and update the guidelines for estimating turn budgets, especially for smaller, well-defined tasks, to improve accuracy based on recent sprint's overestimation.
-    - *Acceptance Criteria:*
-        - New turn estimation guidelines are documented and communicated.
-        - A noticeable improvement in turn estimation accuracy is observed in subsequent sprints.
-- **[ ] Process Improvement: Refine Defect Workflow for Intentional Bugs**
-    - *Description:* Implement a clearer protocol for scenarios involving intentional bugs for process verification. Ensure QA confirms the bug *before* a fix is implemented by development.
-    - *Acceptance Criteria:*
-        - New tasks for intentional bugs include a dedicated "verify bug" step for QA.
-        - Development only proceeds with bug fixes after formal QA confirmation.
-    - *Priority:* Medium
-- **[ ] Process Improvement: Enhance Turn Estimation Accuracy**
-    - *Description:* Refine turn estimation guidelines and practices to reduce overestimation for simple tasks and establish a more reliable turns-per-story-point baseline.
-    - *Acceptance Criteria:*
-        - Updated turn estimation guidelines are documented.
-        - A reduction in the variance between estimated and actual turns is observed in subsequent sprints.
-        - The turns-per-story-point metric is consistently tracked and used for future planning.
-    - *Priority:* Medium
+        - Updated guidance for agents on estimating turns, leading to more accurate estimates.
+        - Reduced deviation between estimated and actual turns in subsequent sprints.
 
 ## ⚪ Low Priority
 - **[ ] Story: User Authentication**
 - **[ ] Story: Database Integration (PostgreSQL)**
+
+### New Items from Sprint Retrospective
+
+#### User Stories
+- [ ] As a User, I want to see a functional demo of the `add` function so that I can verify the intended defect and the fix. (Priority: High) [PM Sign-off: [ ]] 
+
+#### Follow-up Tasks
+- [ ] Investigate why `project_tracking/dummy_math.py` was marked `[x]` Done but was not created. (Priority: High)
+- [ ] Implement a "Pre-QA Check" to verify the existence of all critical files and dependencies before initiating the formal QA process. (Priority: Medium)
+- [ ] Introduce a mandatory artifact verification step for agents to confirm successful file creation/modification before marking a task as `[x]` Done. (Priority: Medium)
 
 ---
 *Last Updated by ProductManager Agent*
