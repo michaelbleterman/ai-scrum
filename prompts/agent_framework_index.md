@@ -221,6 +221,28 @@ ead_file blindly.
 - **kill_process**:
     - Use this to stop ANY background process started with `run_command(..., background=True)`.
     - Always clean up background processes (like servers) before finishing your task.
+- **find_process_by_port**:
+    - Use `find_process_by_port(port_number)` to identify processes blocking critical ports (e.g., 5173, 3000).
+    - Returns PID and process name to help you decide if it's a zombie process.
+- **cleanup_dev_servers**:
+    - Use `cleanup_dev_servers()` to automatically kill stale development servers (vite, node, python, etc.).
+    - Use this if you encounter "port already in use" errors during testing.
+
+## Blocker Reporting Protocol
+
+If you cannot proceed with a task, you **MUST** provide a specific `blocker_reason`:
+
+```python
+# ✅ CORRECT
+update_sprint_task_status(
+    task_description="Task Name",
+    status="[!]", 
+    blocker_reason="Port 5173 occupied by zombie process"
+)
+
+# [X] INCORRECT (Will Error)
+update_sprint_task_status("Task Name", status="[!]") 
+```
 
 ##  Verification Protocol
 Before marking any task as complete ([x]):

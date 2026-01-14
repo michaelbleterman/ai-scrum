@@ -39,6 +39,34 @@ Use `discover_project_context` to understand the codebase:
    - Verify test configuration files exist
    - Ensure test dependencies are installed
 
+### Step 3.5: Playwright Configuration (Web Applications ONLY)
+
+**CRITICAL: If using Playwright, you MUST configure headless mode for autonomous execution.**
+
+Required: Use the standard headless configuration.
+Read it from the template file: `templates/playwright.config.ts`
+And write it to your project root.
+
+**Why Headless is REQUIRED**:
+- ✅ Works in CI/CD environments (GitHub Actions, Jenkins, background execution)
+- ✅ No display session required
+- ✅ Faster execution (no rendering overhead)
+- ✅ Doesn't interfere with user's active desktop
+- ✅ Compatible with parallel agent execution
+
+**Verification**:
+After creating config, verify headless mode:
+```bash
+npx playwright test --list  # Should NOT open browser window
+```
+
+If a browser window opens, you configured it WRONG. Fix immediately by setting `headless: true`.
+
+**NEVER use:**
+- [X] `--headed` flag
+- [X] `--debug` flag (opens browser inspector)
+- [X] `headless: false` in config
+
 4. **If Environment is NOT Ready:**
    - DO NOT proceed with testing
    - Document the specific blocker in `project_tracking/QA_REPORT.md`
@@ -59,6 +87,117 @@ Use `discover_project_context` to understand the codebase:
 3. **Skip Infrastructure Checks:**
    - No need to check ports, services, or running processes
    - Focus on code correctness and file-based outputs
+
+## Phase 1.5: Environment Cleanup (Web Applications MANDATORY)
+
+**Before starting dev servers or tests, clean up zombie processes:**
+
+### Step 1: Check for Zombie Processes
+
+```python
+# Check common dev ports
+common_ports = [3000, 5173, 8080]  # Adjust based on discovered project
+
+for port in common_ports:
+    process_info = find_process_by_port(port)
+    if process_info and "error" not in process_info:
+        log("[WARN] Port 5173 occupied by PID 4567 (node.exe)")
+```
+
+### Step 2: Automatic Cleanup (if zombies found)
+
+```python
+cleanup_result = cleanup_dev_servers(project_type="auto")
+
+if cleanup_result['killed_processes']:
+    log("[OK] Killed 2 zombie processes")
+    log("Freed ports: [5173]")
+else:
+    log("[OK] Environment clean, no zombie processes found")
+```
+
+### Step 3: Verify Cleanup Success
+
+```python
+# Double-check ports are now free
+for port in common_ports:
+    if find_process_by_port(port):
+        # Cleanup failed
+        update_sprint_task_status(
+            task_description="Your current task",
+            status="[!]",
+            blocker_reason="Port 5173 still occupied after cleanup - manual intervention needed"
+        )
+        STOP
+```
+
+**Turn Budget for Cleanup**: Max 5 turns for environment setup
+- If cleanup fails after 5 turns → Mark BLOCKED, don't waste 40 turns
+- **Never spend more than 10 turns on environment setup**
+
+### Step 4: Controlled Server Startup
+
+When starting dev servers for E2E tests:
+
+```python
+# Start server in background with PID tracking
+server_result = run_command("npm run dev", background=True)
+server_pid = server_result['pid']
+
+# IMMEDIATELY save PID for recovery
+enrich_task_context(
+    task_description="Your current task",
+    context_data={"server_pid": server_pid}
+)
+
+# Wait for server to start
+import time
+time.sleep(10)
+
+# Verify server is listening
+server_info = find_process_by_port(5173)  # Expected port
+if not server_info:
+    log("[ERROR] Server didn't start successfully")
+    # Mark as blocked, don't retry endlessly
+else:
+    log("[OK] Server running on port 5173, PID: 12345")
+```
+
+### Step 5: Cleanup After Testing (MANDATORY)
+
+```python
+# At end of tests or on failure
+if server_pid:
+    kill_process(server_pid)
+    log("[OK] Killed dev server (PID: 12345)")
+
+# Verify process is dead
+time.sleep(2)
+if find_process_by_port(5173):
+    log("⚠️ Server didn't terminate cleanly, forcing cleanup")
+    cleanup_dev_servers()
+```
+
+### Error Recovery Protocol
+
+If you encounter port conflicts during testing:
+
+**DO THIS** (Fast recovery - max 5 turns):
+1. Call `cleanup_dev_servers()`
+2. Wait 5 seconds
+3. Retry test ONCE
+4. If still fails → Mark BLOCKED with specific port/PID info
+
+**DON'T DO THIS** (Wastes turns):
+1. Try changing port in config (zombies will follow you)
+2. Try different port numbers repeatedly
+3. Manually craft kill commands
+4. Retry same failing test 10+ times
+5. Waste 30+ turns debugging environment issues
+
+**Remember**: If environment can't be cleaned in 5 turns, it's a framework issue, not your responsibility. Document and exit.
+
+
 
 ## Phase 2: Intelligent Test Execution
 

@@ -193,6 +193,244 @@ def kill_process(pid: int):
         return f"Error terminating process {pid}: {e}"
 
 
+# --- Process Management Tools (for Environment Cleanup) ---
+
+@log_tool_usage
+def find_process_by_port(port: int):
+    """
+    Cross-platform tool to find which process is using a specific port.
+    
+    Args:
+        port: Port number to check (e.g., 5173 for Vite dev server)
+    
+    Returns:
+        Dictionary with process info:
+        {
+            "port": 5173,
+            "pid": 12345,
+            "process_name": "node.exe",
+            "status": "LISTENING"
+        }
+        Returns None if port is free.
+    
+    Example:
+        >>> proc = find_process_by_port(5173)
+        >>> if proc:
+        >>>     print(f"Port 5173 is used by PID {proc['pid']}")
+        >>>     kill_process(proc['pid'])
+    """
+    import platform
+    
+    try:
+        if platform.system() == "Windows":
+            # Use netstat to find port usage
+            result = subprocess.run(
+                f"netstat -ano | findstr :{port}",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.stdout.strip():
+                # Parse netstat output
+                # Format: TCP  0.0.0.0:5173  0.0.0.0:0  LISTENING  12345
+                for line in result.stdout.strip().split("\n"):
+                    if "LISTENING" in line or "ESTABLISHED" in line:
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            pid = int(parts[-1])
+                            
+                            # Get process name using tasklist
+                            proc_result = subprocess.run(
+                                f'tasklist /FI "PID eq {pid}" /FO CSV /NH',
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            
+                            process_name = "unknown"
+                            if proc_result.stdout:
+                                # Parse CSV: "node.exe","12345","Console","1","123,456 K"
+                                csv_line = proc_result.stdout.strip()
+                                if csv_line:
+                                    process_name = csv_line.split(",")[0].strip('"')
+                            
+                            return {
+                                "port": port,
+                                "pid": pid,
+                                "process_name": process_name,
+                                "status": "LISTENING"
+                            }
+                
+                return None  # Port referenced but not listening
+            else:
+                return None  # Port is free
+        
+        else:
+            # Unix/Linux/MacOS implementation
+            result = subprocess.run(
+                f"lsof -i :{port} -t",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.stdout.strip():
+                pid = int(result.stdout.strip().split()[0])
+                
+                # Get process name
+                proc_result = subprocess.run(
+                    f"ps -p {pid} -o comm=",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+                
+                process_name = proc_result.stdout.strip() if proc_result.stdout else "unknown"
+                
+                return {
+                    "port": port,
+                    "pid": pid,
+                    "process_name": process_name,
+                    "status": "LISTENING"
+                }
+            else:
+                return None  # Port is free
+    
+    except subprocess.TimeoutExpired:
+        return {"error": f"Timeout checking port {port}"}
+    except ValueError as e:
+        return {"error": f"Failed to parse process info for port {port}: {e}"}
+    except Exception as e:
+        return {"error": f"Error checking port {port}: {e}"}
+
+
+@log_tool_usage
+def cleanup_dev_servers(project_type: str = "auto"):
+    """
+    Intelligent cleanup of stale development server processes.
+    Scans common dev server ports and kills zombie processes.
+    
+    Args:
+        project_type: "vite", "webpack", "next", "auto" (auto-detect dev server type)
+    
+    Returns:
+        {
+            "killed_processes": [{"pid": 12345, "name": "node.exe", "port": 5173}, ...],
+            "freed_ports": [5173, 5174, ...],
+            "status": "success" or "partial" or "error"
+        }
+    
+    Example:
+        >>> result = cleanup_dev_servers(project_type="auto")
+        >>> print(f"Cleaned up {len(result['killed_processes'])} zombie processes")
+        >>> print(f"Freed ports: {result['freed_ports']}")
+    """
+    import platform
+    
+    # Common development server ports
+    common_ports = [3000, 3001, 5173, 5174, 5175, 5176, 5177, 5178, 8080, 8000, 8888, 4200]
+    
+    killed_processes = []
+    freed_ports = []
+    errors = []
+    
+    logger = logging.getLogger("SprintRunner")
+    logger.info(f"[cleanup_dev_servers] Starting cleanup scan on {len(common_ports)} common ports...")
+    
+    for port in common_ports:
+        try:
+            proc_info = find_process_by_port(port)
+            
+            if proc_info and "error" not in proc_info:
+                # Check if this looks like a dev server process
+                process_name = proc_info.get('process_name', '').lower()
+                pid = proc_info.get('pid')
+                
+                # Heuristic: Identify dev server processes
+                dev_server_keywords = ['node', 'vite', 'webpack', 'next', 'react-scripts', 'nodemon', 'python', 'ruby']
+                is_likely_dev_server = any(kw in process_name for kw in dev_server_keywords)
+                
+                if is_likely_dev_server:
+                    logger.info(f"[cleanup_dev_servers] Found dev server on port {port}: PID {pid} ({process_name})")
+                    
+                    # Kill the process
+                    if platform.system() == "Windows":
+                        kill_result = subprocess.run(
+                            f"taskkill /PID {pid} /F",
+                            shell=True,
+                            capture_output=True,
+                            timeout=5
+                        )
+                    else:
+                        kill_result = subprocess.run(
+                            f"kill -9 {pid}",
+                            shell=True,
+                            capture_output=True,
+                            timeout=5
+                        )
+                    
+                    if kill_result.returncode == 0:
+                        killed_processes.append({
+                            "pid": pid,
+                            "name": process_name,
+                            "port": port
+                        })
+                        freed_ports.append(port)
+                        logger.info(f"[cleanup_dev_servers] [OK] Killed PID {pid} on port {port}")
+                    else:
+                        errors.append(f"Failed to kill PID {pid} on port {port}")
+                        logger.warning(f"[cleanup_dev_servers] [WARN] Failed to kill PID {pid}")
+        
+        except Exception as e:
+            errors.append(f"Error processing port {port}: {e}")
+            logger.debug(f"[cleanup_dev_servers] Error on port {port}: {e}")
+    
+    # Determine status
+    if len(killed_processes) > 0 and len(errors) == 0:
+        status = "success"
+    elif len(killed_processes) > 0 and len(errors) > 0:
+        status = "partial"
+    elif len(killed_processes) == 0 and len(errors) > 0:
+        status = "error"
+    else:
+        status = "success"  # No zombies found, environment clean
+    
+    logger.info(f"[cleanup_dev_servers] Cleanup complete: {len(killed_processes)} killed, {len(freed_ports)} ports freed")
+    
+    return {
+        "killed_processes": killed_processes,
+        "freed_ports": freed_ports,
+        "status": status,
+        "errors": errors if errors else None
+    }
+
+
+@log_tool_usage
+def verify_port_available(port: int):
+    """
+    Quick check if a port is available (not in use).
+    
+    Args:
+        port: Port number to check
+    
+    Returns:
+        True if port is free, False if occupied
+    
+    Example:
+        >>> if verify_port_available(5173):
+        >>>     print("Port 5173 is free, safe to start server")
+        >>> else:
+        >>>     print("Port 5173 is occupied")
+    """
+    proc_info = find_process_by_port(port)
+    return proc_info is None or "error" in proc_info
+
+
+
 @log_async_tool_usage
 async def update_sprint_header(status: str, sprint_dir: str = "project_tracking"):
     """
@@ -280,94 +518,96 @@ async def update_sprint_header(status: str, sprint_dir: str = "project_tracking"
     return "Error: Failed to update status"
 
 @log_async_tool_usage
-async def update_sprint_task_status(task_description: str, status: str = "[x]", sprint_dir: str = "project_tracking"):
+async def update_sprint_task_status(
+    task_description: str, 
+    status: str = "[x]", 
+    blocker_reason: str = None,
+    sprint_dir: str = "project_tracking"
+):
     """
     Updates the status of a specific task in the latest sprint file.
     Uses file locking to prevent race conditions during concurrent updates.
     
     Args:
         task_description (str): The text description of the task (without the - [ ] part).
-        status (str): The new status checkmark, e.g., "[x]".
+        status (str): The new status checkmark. Options: "[x]" (complete), "[/]" (in-progress), 
+                     "[!]" (blocked), "[ ]" (todo).
+        blocker_reason (str): REQUIRED if status="[!]". Specific reason why task is blocked.
+                            Example: "Port 5173 occupied by zombie process"
         sprint_dir (str): Directory containing sprint files.
-    """
-
-    import asyncio
-    import msvcrt
     
+    Raises:
+        ValueError: If status is "[!]" but blocker_reason is not provided.
+    
+    Examples:
+        >>> # Marking complete (no blocker needed)
+        >>> await update_sprint_task_status("Add login API", status="[x]")
+        
+        >>> # Marking blocked (blocker_reason REQUIRED)
+        >>> await update_sprint_task_status(
+        >>>     "Run E2E tests", 
+        >>>     status="[!]",
+        >>>     blocker_reason="Environment contaminated - port 5173 occupied by zombie Vite process PID 12345"
+        >>> )
+    """
+    
+    # CRITICAL VALIDATION: Enforce blocker reason for blocked tasks
+    if status == "[!]" and not blocker_reason:
+        raise ValueError(
+            "BLOCKER REASON REQUIRED: When marking a task as [!] (blocked), you MUST provide blocker_reason.\n\n"
+            "Examples of GOOD blocker reasons:\n"
+            "  - 'Port 5173 occupied by zombie Vite process PID 12345'\n"
+            "  - 'MongoDB connection refused - database not running'\n"
+            "  - 'Missing SMTP_HOST environment variable in .env'\n"
+            "  - 'Test framework not configured in package.json - needs Jest or Vitest'\n\n"
+            "BAD examples (too vague):\n"
+            "  - 'Environment issues' ❌\n"
+            "  - 'Can't proceed' ❌\n"
+            "  - 'Dependencies' ❌\n\n"
+            "Usage:\n"
+            "  update_sprint_task_status(task_description, status='[!]', blocker_reason='Specific issue here')"
+        )
+    
+    from sprint_metadata import update_task_status_in_file
+    from sprint_utils import detect_latest_sprint_file
+
     # Fix for path if not absolute
     if not os.path.isabs(sprint_dir):
          sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
 
-    if not os.path.exists(sprint_dir):
-        # Fallback to checking parent dir if running from scripts/
-        parent_sprint_dir = os.path.join(os.path.dirname(os.getcwd()), "project_tracking")
-        if os.path.exists(parent_sprint_dir):
-            sprint_dir = parent_sprint_dir
-        else:
-             return f"Error: Sprint directory '{sprint_dir}' not found."
-
-    sprint_files = [f for f in os.listdir(sprint_dir) if f.startswith("SPRINT_") and f.endswith(".md")]
-    if not sprint_files:
+    sprint_file = detect_latest_sprint_file(sprint_dir)
+    if not sprint_file:
         return "Error: No sprint files found."
     
-    sprint_files.sort()
-    latest_sprint = os.path.join(sprint_dir, sprint_files[-1])
+    # Use robust fuzzy update with ORIGINAL task description
+    updated = update_task_status_in_file(sprint_file, task_description, status)
     
-    # Retry mechanism for file locking
-    max_retries = 5
-    for attempt in range(max_retries):
+    if not updated:
+        return f"Task '{task_description}' not found in {sprint_file}"
+    
+    # If blocking with reason, append reason to the task line in the file
+    if blocker_reason:
         try:
-            # Use r+ mode for atomic read-modify-write
-            with open(latest_sprint, "r+", encoding="utf-8") as f:
-                try:
-                    # Acquire exclusive lock (Windows compatible)
-                    # Lock 1 byte at position 0
-                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-                    
-                    # Read and update
-                    lines = f.readlines()
-                    
-                    updated_lines = []
-                    found = False
-                    for line in lines:
-                        if task_description in line and "- [" in line:
-                            new_line = re.sub(r"- \[.\]", f"- {status}", line)
-                            updated_lines.append(new_line)
-                            found = True
-                        else:
-                            updated_lines.append(line)
-                    
-                    if found:
-                        # Write atomically
-                        f.seek(0)
-                        f.writelines(updated_lines)
-                        f.truncate()
-                        
-                        return f"Successfully updated task '{task_description}' to {status} in {latest_sprint}"
-                    else:
-                        return f"Task '{task_description}' not found in {latest_sprint}"
-                
-                finally:
-                    # Always unlock
-                    try:
-                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                    except:
-                        pass  # Unlocking may fail if file is closed
-        
-        except IOError as e:
-            # Lock contention - retry with exponential backoff
-            if attempt < max_retries - 1:
-                wait_time = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1, 0.2, 0.4, 0.8, 1.6s
-                logger = logging.getLogger("SprintRunner")
-                logger.debug(f"Lock contention on attempt {attempt + 1}, retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-            else:
-                return f"Error: Failed to update after {max_retries} attempts due to lock contention: {e}"
-        
+            with open(sprint_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Find the task line and append blocker reason if not already present
+            for i, line in enumerate(lines):
+                if task_description in line and f"- [{status}]" in line:
+                    if "[BLOCKED:" not in line:
+                        # Append blocker reason before newline
+                        lines[i] = line.rstrip() + f" [BLOCKED: {blocker_reason}]\n"
+                    break
+            
+            with open(sprint_file, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            
+            return f"Successfully updated task '{task_description}' to {status} with blocker: {blocker_reason}"
         except Exception as e:
-            return f"Error updating sprint file: {e}"
-    
-    return f"Error: Failed to update task '{task_description}' after {max_retries} attempts"
+            return f"Updated status but failed to append blocker reason: {e}"
+    else:
+        return f"Successfully updated task '{task_description}' to {status} in {sprint_file}"
+
 
 
 @log_async_tool_usage
@@ -816,6 +1056,9 @@ worker_tools = [
                      FunctionTool(write_file),
                      FunctionTool(run_command),
                      FunctionTool(kill_process),
+                     FunctionTool(find_process_by_port),
+                     FunctionTool(cleanup_dev_servers),
+                     FunctionTool(verify_port_available),
                      FunctionTool(search_codebase),
                      FunctionTool(discover_project_context),
                      FunctionTool(enrich_task_context),
