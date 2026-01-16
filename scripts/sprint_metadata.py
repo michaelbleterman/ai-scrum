@@ -138,3 +138,71 @@ def update_task_metadata_in_file(sprint_file: str, task_desc: str, new_metadata:
     
     # Even if content didn't change, we found the task, so return True
     return True
+
+
+def update_task_status_in_file(sprint_file: str, task_desc: str, status: str) -> bool:
+    """
+    Update task status in sprint file using fuzzy matching.
+    
+    Args:
+        sprint_file: Path to sprint markdown file
+        task_desc: Task description to find (partial match)
+        status: New status string (e.g. "[x]", "[/]")
+    
+    Returns:
+        True if updated successfully
+    """
+    if not os.path.exists(sprint_file):
+        return False
+    
+    try:
+        with open(sprint_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        return False
+    
+    # Clean up the input task description for comparison
+    clean_search = re.sub(r'\[.*?\]', '', task_desc)
+    clean_search = re.sub(r'^[\s\-\*]+', '', clean_search)
+    clean_search = re.sub(r'[\'"`]', '', clean_search).strip().lower()
+    
+    best_ratio = 0.0
+    best_idx = -1
+    
+    # 1. Fuzzy Match Phase
+    for i, line in enumerate(lines):
+        # Only check lines that look like tasks
+        if not re.match(r'^\s*-\s*\[[x /!]\]', line):
+            continue
+            
+        # Clean up the line content
+        clean_line = re.sub(r'\[.*?\]', '', line)
+        clean_line = re.sub(r'^\s*-\s*\[[x /!]\]', '', clean_line)
+        clean_line = re.sub(r'[\'"`]', '', clean_line).strip().lower()
+        
+        ratio = difflib.SequenceMatcher(None, clean_search, clean_line).ratio()
+        
+        if clean_search in clean_line or clean_line in clean_search:
+            ratio = max(ratio, 0.85)
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx = i
+            
+    if best_ratio < 0.6:
+        return False
+        
+    # 2. Update Phase
+    target_line = lines[best_idx]
+    
+    # Regex to replace status checkbox
+    # - [ ] or - [x] or - [/]
+    new_line = re.sub(r'(-\s*\[)[x /!](\])', fr'\1{status.strip("[]")}\2', target_line, count=1)
+    
+    if new_line != target_line:
+        lines[best_idx] = new_line
+        with open(sprint_file, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        return True
+    
+    return True

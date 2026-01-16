@@ -1063,7 +1063,8 @@ worker_tools = [
                      FunctionTool(discover_project_context),
                      FunctionTool(enrich_task_context),
                      FunctionTool(request_turn_budget),
-                     FunctionTool(record_turn_usage)
+                     FunctionTool(record_turn_usage),
+                     FunctionTool(update_sprint_task_status)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]

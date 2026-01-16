@@ -28,20 +28,47 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 # --- Logging Setup ---
-def setup_logging():
-    # Create logs directory if it doesn't exist
-    log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
-    os.makedirs(log_dir, exist_ok=True)
+def setup_logging(project_root=None):
+    """
+    Set up logging with project-specific timestamped log files.
     
-    log_file = os.path.join(log_dir, "sprint_debug.log")
+    Args:
+        project_root: Optional project root directory. If provided, logs will be 
+                     created in project_root/project_tracking/logs/ with timestamps.
+                     Otherwise, falls back to centralized .agent/logs/
+    """
+    from datetime import datetime
     
-    # Create rotating file handler (20MB max, 5 backups = 100MB total)
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=20 * 1024 * 1024,  # 20 MB
-        backupCount=5,
-        encoding='utf-8'
-    )
+    # Determine log directory based on project_root
+    if project_root and os.path.exists(project_root):
+        # Create logs in project's project_tracking directory
+        tracking_dir = os.path.join(project_root, "project_tracking")
+        log_dir = os.path.join(tracking_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Generate timestamped log filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        project_name = os.path.basename(project_root)
+        log_filename = f"sprint_{project_name}_{timestamp}.log"
+        log_file = os.path.join(log_dir, log_filename)
+    else:
+        # Fallback to centralized logs
+        log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "sprint_debug.log")
+    
+    # Create file handler (no rotation for timestamped logs, rotation for centralized)
+    if project_root:
+        # Standard file handler for project-specific logs (each run = new file)
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    else:
+        # Rotating handler for centralized logs
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=20 * 1024 * 1024,  # 20 MB
+            backupCount=5,
+            encoding='utf-8'
+        )
     file_handler.setLevel(logging.DEBUG)
     
     # Console handler
@@ -59,9 +86,13 @@ def setup_logging():
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     
+    # Log the log file location
+    logger.info(f"Logging to: {log_file}")
+    
     return logger
 
-logger = setup_logging()
+# Logger will be initialized with project context in main()
+logger = None
 
 def log(msg):
     # Log to file and console via logger
@@ -751,11 +782,16 @@ class SprintRunner:
 
 # --- Main Entry Point ---
 async def main(project_root=None):
+    global logger
+    
     # Set project root if provided, otherwise default to CWD
     if project_root:
         SprintConfig.set_project_root(project_root)
     else:
         SprintConfig.set_project_root(os.getcwd())
+    
+    # Initialize logger with project context
+    logger = setup_logging(SprintConfig.PROJECT_ROOT)
     
     log(f"Project root: {SprintConfig.PROJECT_ROOT}")
     log(f"Sprint directory: {SprintConfig.get_sprint_dir()}")

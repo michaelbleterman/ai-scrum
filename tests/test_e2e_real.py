@@ -108,9 +108,27 @@ class TestE2EReal(unittest.TestCase):
         # --- CONTEXT DISCOVERY VALIDATION ---
         print("\n[Test] Validating context discovery...")
         
-        # Check that agents discovered project context
-        log_path = os.path.join(self.BASE_DIR, "logs", "sprint_debug.log")
-        if os.path.exists(log_path):
+        # Find the most recent timestamped log file in project_tracking/logs
+        log_dir = os.path.join(self.SPRINT_DIR, "logs")
+        log_path = None
+        
+        if os.path.exists(log_dir):
+            # Get all log files and find the most recent one
+            log_files = [f for f in os.listdir(log_dir) if f.startswith("sprint_") and f.endswith(".log")]
+            if log_files:
+                # Sort by modification time, most recent first
+                log_files.sort(key=lambda x: os.path.getmtime(os.path.join(log_dir, x)), reverse=True)
+                log_path = os.path.join(log_dir, log_files[0])
+                print(f"[Test] Found log file: {log_files[0]}")
+        
+        # Fallback to old centralized log location if project-specific log not found
+        if not log_path or not os.path.exists(log_path):
+            fallback_path = os.path.join(self.BASE_DIR, "logs", "sprint_debug.log")
+            if os.path.exists(fallback_path):
+                log_path = fallback_path
+                print(f"[Test] Using fallback log: sprint_debug.log")
+        
+        if log_path and os.path.exists(log_path):
             with open(log_path, "r", encoding="utf-8") as f:
                 log_content = f.read()
                 

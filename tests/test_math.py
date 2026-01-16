@@ -1,16 +1,17 @@
 
-import unittest
 import sys
 import os
 
-# Add the project_tracking directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'project_tracking')))
+# This is a common pattern to ensure the test runner can find the module to test
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from dummy_math import add
+from project_tracking.dummy_math import add
 
-class TestMath(unittest.TestCase):
-    def test_add(self):
-        self.assertEqual(add(2, 3), 5, "Should be 5")
-
-if __name__ == '__main__':
-    unittest.main()
+def test_add_bug_confirmation():
+    """
+    This test is designed to fail, confirming the defect that add(a, b)
+    is incorrectly implemented as a - b.
+    """
+    expected_result = 5
+    actual_result = add(2, 3)
+    assert actual_result == expected_result, f"DEFECT CONFIRMED: Expected 2 + 3 to be {expected_result}, but got {actual_result}."

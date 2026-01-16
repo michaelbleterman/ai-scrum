@@ -44,8 +44,30 @@ Use `discover_project_context` to understand the codebase:
 **CRITICAL: If using Playwright, you MUST configure headless mode for autonomous execution.**
 
 Required: Use the standard headless configuration.
-Read it from the template file: `templates/playwright.config.ts`
-And write it to your project root.
+Create `playwright.config.ts` in your project root. You may adapt specific settings (like projects or timeouts) to your needs, but you **MUST** ensure `headless: true` is set in the `use` block.
+
+**Base Template (Modify as needed, but keep `headless: true`):**
+
+```typescript
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  reporter: 'html',
+  use: {
+    baseURL: 'http://localhost:5173',
+    trace: 'on-first-retry',
+    headless: true, // CRITICAL: DO NOT CHANGE THIS
+  },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+  ],
+});
+```
 
 **Why Headless is REQUIRED**:
 - ✅ Works in CI/CD environments (GitHub Actions, Jenkins, background execution)
