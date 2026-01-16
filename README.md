@@ -67,7 +67,27 @@ Create a `.env` file in your **project directory** (or in `scripts/`):
 GOOGLE_API_KEY=your_google_api_key_here
 MODEL_NAME=gemini-3-flash-preview
 CONCURRENCY_LIMIT=3
+
+# Memory Configuration
+ENABLE_MEMORY=true
 ```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_MEMORY` | `true` | Enable long-term memory across sprints |
+
+The framework uses ChromaDB vector database to store task outcomes, patterns, and learnings.
+Memory is stored in `<project>/.agent/memory/` and persists across sprint sessions.
+
+# Guardrails Configuration
+ENABLE_GUARDRAILS=true
+DENIED_TOPICS=password,api_key,secret,token
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_GUARDRAILS` | `true` | Enable safety checks (PII, content filter) |
+| `DENIED_TOPICS` | `password,api_key...` | Comma-separated list of forbidden topics |
+
 
 ### 3. Initialize Project Tracking
 

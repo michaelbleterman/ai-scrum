@@ -62,6 +62,11 @@ class TestE2EReal(unittest.TestCase):
     def test_full_lifecycle(self):
         print("\n\n=== STARTING E2E TEST ===")
         
+        # Initialize Logger (Fix for AttributeError)
+        import scripts.parallel_sprint_runner
+        scripts.parallel_sprint_runner.logger = scripts.parallel_sprint_runner.setup_logging(self.BASE_DIR)
+
+        
         # Set project root to BASE_DIR so it uses the .agent/project_tracking folder
         SprintConfig.set_project_root(self.BASE_DIR)
         print(f"[Test] Project root set to: {SprintConfig.PROJECT_ROOT}")

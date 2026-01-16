@@ -19,8 +19,13 @@ from sprint_tools import (
     pm_tools,
     record_turn_usage, 
     update_sprint_task_status, 
-    update_sprint_header
+    update_sprint_task_status, 
+    update_sprint_header,
+    search_memory,
+    save_learning
 )
+from sprint_memory import SprintMemoryBank
+from sprint_guardrails import AgentGuardrails
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 from sprint_metadata import parse_task_metadata
 
@@ -158,7 +163,7 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
-async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, memory_bank=None, guardrails=None):
     log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
     await update_sprint_header("In Progress", SprintConfig.get_sprint_dir())
     
@@ -219,6 +224,34 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     status = task_info["status"]
                     blocker_reason = task_info.get("blocker_reason")
                     
+                    if guardrails:
+                        # --- Guardrails Input Validation ---
+                        is_valid, violations = guardrails.validate_input(desc)
+                        if not is_valid:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] BLOCKED by guardrails:")
+                            for v in violations:
+                                log(f"      - {v.reason}")
+                            
+                            await update_sprint_task_status(
+                                desc, "[!]",
+                                blocker_reason=f"Guardrail violation: {violations[0].reason}",
+                                sprint_dir=SprintConfig.get_sprint_dir()
+                            )
+                            queue.task_done()
+                            continue
+
+                        # --- Circuit Breaker Check ---
+                        allowed, circuit_reason = guardrails.check_circuit(desc)
+                        if not allowed:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Circuit breaker OPEN: {circuit_reason}")
+                            await update_sprint_task_status(
+                                desc, "[!]",
+                                blocker_reason=circuit_reason,
+                                sprint_dir=SprintConfig.get_sprint_dir()
+                            )
+                            queue.task_done()
+                            continue
+                    
                     # Check retry limit for blocked tasks
                     if status == "blocked":
                         retry_count = task_retry_tracker.get(desc, 0)
@@ -249,6 +282,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
 
                     agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
                     
+                    
                     # Discover and inject project context (cached per execution)
                     if not hasattr(run_parallel_execution, '_project_context_cache'):
                         try:
@@ -269,8 +303,25 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         f"Do NOT introduce new languages or frameworks.\n"
                         f"========================\n"
                     )
+
+                    # --- Memory Recall ---
+                    memory_context = ""
+                    if memory_bank and memory_bank.enable_memory:
+                        try:
+                            relevant_memories = memory_bank.recall(query=desc, top_k=3)
+                            if relevant_memories:
+                                log(f"    [Task {task_index+1}] Found {len(relevant_memories)} relevant memories")
+                                memory_context = "\n\n=== RELEVANT PAST EXPERIENCES (MEMORY BANK) ===\n"
+                                memory_context += "Use these insights to guide your implementation and avoid past errors:\n"
+                                for i, mem in enumerate(relevant_memories, 1):
+                                    relevance = 1 - mem.get('distance', 1.0)
+                                    mem_type = mem.get('metadata', {}).get('memory_type', 'unknown')
+                                    memory_context += f"{i}. [{relevance:.0%} relevant] ({mem_type}) {mem['content']}\n"
+                                memory_context += "===============================================\n"
+                        except Exception as mem_err:
+                            log(f"    [Memory Recall] Failed: {mem_err}")
                     
-                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{project_context_instruction}\n\nTask: {desc}"
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{project_context_instruction}\n{memory_context}\n\nTask: {desc}"
                     
                     # Add status-specific instructions
                     if status == "in_progress":
@@ -387,11 +438,51 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         # Record actual usage
                         record_turn_usage(desc, actual_turns)
                         
+                        # Record success for circuit breaker
+                        if guardrails:
+                            guardrails.record_action(desc, success=True)
+                        
                         # DIRECT UPDATE: Mark done
                         await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
+                        
+                        # Store success in memory
+                        if memory_bank and memory_bank.enable_memory:
+                            try:
+                                memory_bank.store(
+                                    content=f"Task '{desc}' completed successfully by {role_raw}",
+                                    memory_type="task_outcome",
+                                    metadata={
+                                        "role": role_raw,
+                                        "turns": actual_turns,
+                                        "status": "success",
+                                        "sprint_file": sprint_file
+                                    }
+                                )
+                            except Exception as mem_e:
+                                log(f"    [Memory Store] Failed to store success: {mem_e}")
 
                     except Exception as e:
                         log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                        
+                        # Record failure for circuit breaker
+                        if guardrails:
+                            guardrails.record_action(desc, success=False)
+                        
+                        # Store failure in memory
+                        if memory_bank and memory_bank.enable_memory:
+                            try:
+                                memory_bank.store(
+                                    content=f"Task '{desc}' failed: {str(e)}",
+                                    memory_type="error_resolution",
+                                    metadata={
+                                        "role": role_raw,
+                                        "error": str(e),
+                                        "status": "failed",
+                                        "sprint_file": sprint_file
+                                    }
+                                )
+                            except Exception as mem_e:
+                                log(f"    [Memory Store] Failed to store error: {mem_e}")
                         # Record partial usage (best effort)
                         # Note: We can't easily get partial turn count here as it's local to run_agent
                         # Unless run_agent returns it in exception or we track it externally.
@@ -700,10 +791,19 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
 
 # --- Lifecycle Runner ---
 class SprintRunner:
-    def __init__(self, agent_factory=default_agent_factory, input_callback=None):
+    def __init__(self, agent_factory=default_agent_factory, input_callback=None, memory_bank=None):
         self.agent_factory = agent_factory
         self.input_callback = input_callback
         self.session_service = InMemorySessionService()
+        self.memory_bank = memory_bank
+        
+        # Initialize guardrails
+        self.guardrails = AgentGuardrails(
+            denied_topics=['password', 'api_key', 'secret', 'token'],
+            enable_pii_detection=True, # os.getenv("ENABLE_GUARDRAILS", "true") == "true"
+            enable_content_filter=True,
+            enable_circuit_breaker=True
+        )
 
     async def run_cycle(self):
         SprintConfig.validate()
@@ -746,7 +846,7 @@ class SprintRunner:
             
             # 1. Execute Pending
             tasks_run = await run_parallel_execution(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory, memory_bank=self.memory_bank, guardrails=self.guardrails
             )
             
             # 2. QA
@@ -796,7 +896,16 @@ async def main(project_root=None):
     log(f"Project root: {SprintConfig.PROJECT_ROOT}")
     log(f"Sprint directory: {SprintConfig.get_sprint_dir()}")
     
-    runner = SprintRunner()
+    # Initialize memory bank
+    enable_memory = os.getenv("ENABLE_MEMORY", "true").lower() == "true"
+    memory_bank = SprintMemoryBank(SprintConfig.PROJECT_ROOT, enable_memory=enable_memory)
+    log(f"Memory Bank: {memory_bank.get_statistics()}")
+    
+    # Inject memory bank into tools
+    search_memory._memory_bank = memory_bank
+    save_learning._memory_bank = memory_bank
+    
+    runner = SprintRunner(memory_bank=memory_bank)
     try:
         await runner.run_cycle()
     except asyncio.CancelledError:

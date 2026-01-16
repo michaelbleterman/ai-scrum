@@ -1049,6 +1049,84 @@ def analyze_turn_metrics(sprint_file: str = None) -> dict:
     return stats
 
 
+# --- Memory Management Tools ---
+
+@log_tool_usage
+def search_memory(query: str, memory_type: str = None, top_k: int = 3):
+    """
+    Search long-term memory for relevant past experiences.
+    
+    Args:
+        query: What to search for (e.g., "port conflict errors")
+        memory_type: Filter by type ('task_outcome', 'error_resolution', 'pattern', 'decision')
+        top_k: Number of results to return (default: 3)
+    
+    Returns:
+        List of relevant memories with similarity scores
+    """
+    # Get memory bank from global context (set by runner)
+    memory_bank = getattr(search_memory, '_memory_bank', None)
+    
+    # Graceful fallback if memory not enabled or not initialized
+    if not memory_bank:
+        return "Memory system not initialized."
+    
+    if not memory_bank.enable_memory:
+        return "Memory system disabled."
+    
+    try:
+        results = memory_bank.recall(query=query, memory_type=memory_type, top_k=top_k)
+        
+        if not results:
+            return f"No memories found for: {query}"
+        
+        output = []
+        for i, mem in enumerate(results, 1):
+            relevance = 1 - mem.get('distance', 1.0)
+            mem_type = mem.get('metadata', {}).get('memory_type', 'unknown')
+            output.append(f"{i}. [{relevance:.0%} relevant] ({mem_type}) {mem['content']}")
+        
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error searching memory: {e}"
+
+
+@log_tool_usage
+def save_learning(content: str, memory_type: str, metadata_json: str = "{}"):
+    """
+    Save a new learning or insight to long-term memory.
+    
+    Args:
+        content: What you learned (clear, concise description)
+        memory_type: Type of learning ('pattern', 'decision', 'error_resolution')
+        metadata_json: Additional structured data as JSON string (default: "{}")
+    """
+    import json
+    memory_bank = getattr(save_learning, '_memory_bank', None)
+    
+    if not memory_bank:
+        return "Memory system not initialized."
+    
+    if not memory_bank.enable_memory:
+        return "Memory system disabled."
+    
+    try:
+        try:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+        except json.JSONDecodeError:
+            return f"Error: metadata_json must be valid JSON string. Got: {metadata_json}"
+            
+        memory_id = memory_bank.store(
+            content=content,
+            memory_type=memory_type,
+            metadata=metadata
+        )
+        
+        return f"Saved learning to memory: {memory_id}"
+    except Exception as e:
+        return f"Error saving learning: {e}"
+
+
 # Tool Definitions for Agent Consumption
 worker_tools = [
                      FunctionTool(list_dir),
@@ -1064,7 +1142,9 @@ worker_tools = [
                      FunctionTool(enrich_task_context),
                      FunctionTool(request_turn_budget),
                      FunctionTool(record_turn_usage),
-                     FunctionTool(update_sprint_task_status)
+                     FunctionTool(update_sprint_task_status),
+                     FunctionTool(search_memory),
+                     FunctionTool(save_learning)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]
