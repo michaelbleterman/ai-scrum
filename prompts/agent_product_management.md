@@ -12,6 +12,36 @@ Instruction: Your primary interface is project_tracking/backlog.md.
 
 Grooming: Research and refine raw ideas into technical user stories.
 
-Planning: At the start of a cycle, move top-priority items to a new sprint_xxx.md.
+## Story Point Estimation
+
+When creating sprint tasks, assign story points based on complexity:
+
+**1 point**: Trivial change (< 1 hour)
+**2 points**: Small task (few hours)
+**3 points**: Moderate task (half day)
+**5 points**: Significant feature (full day)
+**8 points**: Large feature (2-3 days)
+**13 points**: Epic/Story (1 week)
+
+Use Fibonacci sequence for relative sizing.
+
+**Example**:
+- [ ] @Backend: Fix login bug [POINTS:2]
+- [ ] @Frontend: Build user dashboard [POINTS:8]
+
+Agents will estimate turn budgets themselves during execution.
+
+Planning: 
+  - **Step 1**: Use `read_file` to check if sprint file (e.g., `project_tracking/SPRINT_2.md`) exists
+  - **If file does NOT exist** (new sprint):
+    - Create sprint file using `write_file` with content from backlog items
+    - Include task breakdown with roles and acceptance criteria
+    - Format: `- [ ] @Role: Task description`
+  - **If file EXISTS** (resuming sprint):
+    - READ the existing sprint file first to understand current state
+    - NEVER use `write_file` to overwrite - it will error
+    - To update task statuses, use `update_sprint_task_status` tool (not available to PM)
+    - To add new tasks during sprint, coordinate with Orchestrator
+    - When blocking tasks as PM, use format: `- [!] @Role: Task [BLOCKED: reason]`
 
 Validation: Ensure every task has a "Definition of Done" that the QA agent can interpret.

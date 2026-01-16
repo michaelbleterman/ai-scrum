@@ -1,4 +1,8 @@
 from project_tracking.dummy_math import add
 
-def test_add():
-    assert add(2, 3) == 5, f"Expected 5, but got {add(2, 3)}"
+def test_add_positive_numbers():
+    """
+    Tests if the add function correctly adds two positive numbers.
+    This test is expected to FAIL due to the intentional bug.
+    """
+    assert add(2, 3) == 5

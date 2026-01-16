@@ -143,6 +143,14 @@ python tests/test_e2e_real.py
 5. ✅ Backlog updates
 6. ✅ Exit code 0 (CI-compatible)
 
+### Run Runner Logic Unit Tests
+
+```powershell
+python -m pytest tests/test_runner_logic.py
+```
+
+Validates the core logic for sprint resumption and blocker handling without full E2E execution.
+
 ## CLI Reference
 
 ```powershell
@@ -246,3 +254,5 @@ See [`MODEL_SELECTION.md`](MODEL_SELECTION.md) for detailed model capabilities, 
 - **Tests**:
     - Updated `tests/test_sprint_utils.py` to verify inline role parsing.
     - Patched `tests/test_e2e_real.py` to ensure robust path handling during test execution (fixing `CWD` mismatches).
+- **Resiliency**:
+    - **Retry Logic**: Enhanced `parallel_sprint_runner.py` to automatically retry tasks with exponential backoff when encountering **429 Rate Limit** errors from the Gemini API.

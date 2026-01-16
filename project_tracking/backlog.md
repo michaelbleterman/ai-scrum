@@ -1,28 +1,12 @@
-# Product Backlog
+# Backlog
 
-This backlog tracks future enhancements and features for the Project.
+## New User Stories & Enhancements
+- **Story:** Explore enhancements based on positive user feedback
+    - **Priority:** Medium
+    - **Acceptance Criteria:** Research common user requests for similar functionalities, identify potential next features.
 
-## 🟢 High Priority (Next Sprint)
-- **[ ] Story: Implement Real API Structure**
-    - *Description:* Replace `dummy_api.py` with a Flask or FastAPI skeleton.
-    - *Acceptance Criteria:*
-        - Endpoint `/health` returns JSON `{"status": "healthy"}`.
-        - Unit tests for the endpoint.
-- **[ ] Story: Basic React Frontend**
-    - *Description:* Initialize a React application to replace the `dummy_ui.txt`.
-    - *Acceptance Criteria:*
-        - `App.js` displays "Project Dashboard".
-        - Fetches health status from API.
-
-## 🟡 Medium Priority
-- **[ ] Story: CI/CD Pipeline Setup**
-    - *Description:* Add GitHub Actions for automated testing.
-- **[ ] Story: Dockerization**
-    - *Description:* Create Dockerfiles for both FE and BE.
-
-## ⚪ Low Priority
-- **[ ] Story: User Authentication**
-- **[ ] Story: Database Integration (PostgreSQL)**
-
----
-*Last Updated by ProductManager Agent*
+## Process Improvement Tasks
+- **Task:** Refine backend task estimation process
+    - **Priority:** High
+    - **Description:** Analyze historical turn usage for backend tasks to develop more accurate estimation guidelines for future sprints.
+    - **Acceptance Criteria:** Document updated estimation guidelines, conduct a review with development team.

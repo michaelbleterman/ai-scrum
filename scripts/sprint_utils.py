@@ -8,7 +8,7 @@ def detect_latest_sprint_file(sprint_dir: str):
         
     sprint_files = [
         f for f in os.listdir(sprint_dir) 
-        if f.startswith("SPRINT_") and f.endswith(".md") and "REPORT" not in f
+        if f.startswith("SPRINT_") and f.endswith(".md") and "REPORT" not in f and "TEST_PLAN" not in f
     ]
     if not sprint_files:
         return None
@@ -19,7 +19,8 @@ def detect_latest_sprint_file(sprint_dir: str):
 def parse_sprint_tasks(sprint_file_path: str):
     """
     Parses the Task Breakdown section of a sprint markdown file.
-    Returns a list of tasks with role and description that are pending [ ].
+    Returns a list of tasks with role, description, and status.
+    Status values: "todo" ([ ]), "in_progress" ([/]), "blocked" ([!])
     """
     tasks = []
     if not sprint_file_path or not os.path.exists(sprint_file_path):
@@ -54,8 +55,8 @@ def parse_sprint_tasks(sprint_file_path: str):
                 current_section_roles = [] # Reset for new Epic/Story if no explicit role in header
 
         # 2. Check for Task Items
-        # Matches: - [ ] ... or - [/] ...
-        task_match = re.search(r"^\s*-\s*\[([ /])\]\s*(.*)", line)
+        # Matches: - [ ] ... or - [/] ... or - [!] ...
+        task_match = re.search(r"^\s*-\s*\[([ /!])\]\s*(.*)", line)
         if task_match:
             status_char = task_match.group(1)
             full_desc = task_match.group(2).strip()
@@ -74,8 +75,37 @@ def parse_sprint_tasks(sprint_file_path: str):
                 role = current_section_roles[0]
             
             if role:
-                # We only care about pending ([ ]) or in-progress ([/]) tasks here
-                tasks.append({"role": role, "desc": desc})
+                # Map status character to status string
+                status_map = {
+                    " ": "todo",
+                    "/": "in_progress",
+                    "!": "blocked"
+                }
+                status = status_map.get(status_char, "todo")
+                
+                # Extract blocker reason if present (format: "task desc [BLOCKED: reason]")
+                blocker_reason = None
+                if status == "blocked":
+                    blocker_match = re.search(r"\[BLOCKED:\s*(.+?)\]\s*$", desc)
+                    if blocker_match:
+                        blocker_reason = blocker_match.group(1).strip()
+                        # Remove blocker annotation from description
+                        desc = re.sub(r"\s*\[BLOCKED:.+?\]\s*$", "", desc).strip()
+                    else:
+                        # Log warning when blocked task is missing blocker reason
+                        import logging
+                        logging.getLogger("SprintRunner").warning(
+                            f"Blocked task missing blocker reason: '{desc}' (@{role}). "
+                            f"Use format: [BLOCKED: reason]"
+                        )
+                
+                # Only return pending, in-progress, or blocked tasks (skip completed [x])
+                tasks.append({
+                    "role": role,
+                    "desc": desc,
+                    "status": status,
+                    "blocker_reason": blocker_reason
+                })
 
     return tasks
 
@@ -139,3 +169,39 @@ def get_all_sprint_tasks(sprint_file_path: str):
                     "raw_line": line_stripped
                 })
     return tasks
+
+def analyze_sprint_status(sprint_file_path: str):
+    """
+    Analyzes the current status of a sprint file.
+    Returns a summary dict with counts and lists of tasks by status.
+    """
+    all_tasks = get_all_sprint_tasks(sprint_file_path)
+    
+    summary = {
+        "total": len(all_tasks),
+        "completed": 0,
+        "in_progress": 0,
+        "blocked": 0,
+        "todo": 0,
+        "defect": 0,
+        "unknown": 0,
+        "blocked_tasks": [],  # List of blocked task details
+        "in_progress_tasks": [],  # List of in-progress task details
+    }
+    
+    for task in all_tasks:
+        status = task["status"]
+        summary[status] = summary.get(status, 0) + 1
+        
+        if status == "blocked":
+            summary["blocked_tasks"].append({
+                "role": task["role"],
+                "desc": task["desc"]
+            })
+        elif status == "in_progress":
+            summary["in_progress_tasks"].append({
+                "role": task["role"],
+                "desc": task["desc"]
+            })
+    
+    return summary

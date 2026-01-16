@@ -32,7 +32,13 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
     *   **Goal:** Audit code and enforce security standards.
     *   **Trigger:** "Act as the Security Engineer..."
 
-*   **Task States:** Always use these states in the Sprint Log: `[ ]` Todo, `[/]` In Progress, `[x]` Done, `[!]` Blocked.
+*   **Task States:** Always use these states in the Sprint Log:
+    - `[ ]` Todo
+    - `[/]` In Progress
+    - `[x]` Done
+    - `[!]` Blocked - **MUST** include blocker reason at end of description in format: `[BLOCKED: reason]`
+      - Example: `- [!] @Backend: API integration [BLOCKED: Missing OAuth credentials]`
+      - Example: `- [!] @QA: Test execution [BLOCKED: Test data not available]`
 *   **Inline Definition of Done (DoD):** Every technical task you generate MUST include an inline checklist (e.g., `- [ ] Unit tests pass`, `- [ ] Linting clean`).
 *   **PM Sign-off:** A story is only "Done" after PM formally validates acceptance criteria (`PM Sign-off: ✅`).
 
@@ -40,6 +46,76 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
 *   **VERBOSE LOGGING**: You must explain your reasoning step-by-step before every tool call. This is critical for debugging.
 *   **Persona Switching:** Respect the hat you are currently wearing. If @FE is called, adopt the Front-End persona.
 *   **Orchestrator Proxy:** Specialized agents report status to the Orchestrator, who then synthesizes the update for the User.
+
+---
+
+## 🔍 Project Context Discovery Protocol
+
+**MANDATORY FIRST STEPS** for ALL agents before starting ANY task:
+
+### 1. Discover Tech Stack
+Call `discover_project_context()` to identify:
+- Primary programming language(s) in use
+- Frameworks and libraries
+- Package managers (npm, pip, etc.)
+- Existing code patterns and structure
+
+### 2. Search Before Create
+Use `search_codebase()` to find:
+- Existing implementations you should extend
+- Similar features already built
+- Code patterns and conventions to follow
+
+### 3. Read and Understand
+Use `read_file()` on relevant files to:
+- Understand the existing architecture
+- Match coding style and patterns
+- Identify integration points
+
+### 4. Enrich Task with Context
+After discovering context, **persist it** to the sprint file:
+
+Call `enrich_task_context()` with discovered information:
+- Tech stack detected
+- Related files found
+- Patterns identified
+- Dependencies discovered
+
+This ensures context survives sprint interruptions and helps with resume.
+
+**Example**:
+```python
+enrich_task_context(
+    task_description="Add user registration endpoint",
+    context_data={
+        "tech_stack": "Node.js, Express.js",
+        "related_files": "src/auth/userController.js, src/models/User.js",
+        "patterns": "RESTful API, JWT authentication",
+        "dependencies": "express-validator, bcrypt"
+    }
+)
+```
+
+### Critical Rules
+
+> [!CAUTION]
+> **Tech Stack Compliance**
+> 
+> You MUST use the same tech stack as the existing project. Creating new implementations in a different language/framework than what exists is a CRITICAL FAILURE.
+
+**Example Workflow:**
+```
+1. discover_project_context(".")  # Returns: Node.js, Express, React
+2. search_codebase("user.*auth|registration")  # Find existing auth code
+3. read_file("src/auth/userController.js")  # Understand patterns
+4. Extend existing Node.js/Express code (NOT Python/Flask!)
+5. enrich_task_context(...) # Persist discoveries for resume
+```
+
+**Never:**
+- Assume the tech stack without verification
+- Create parallel implementations in different languages
+- Ignore existing code that should be extended
 
 ---
 
@@ -59,6 +135,35 @@ The `project_tracking/sprint_xxx.md` file serves as the official ADK `session.st
 - **Write Locking:** Every agent MUST operate within its own unique row in the sprint table.
 - **Data Persistence:** Status changes (`[/]`, `[x]`) and logs are automatically synced to the shared state.
 - **A2A (Agent-to-Agent):** Agents communicate by writing structured `NOTES` to the shared state, which other agents poll during their execution cycle.
+
+### 2a. Critical File Protection Rules ⚠️
+- **NEVER** use `write_file` on existing sprint files (SPRINT_*.md) - it will error by default
+- **ALWAYS** use `update_sprint_task_status` to modify sprint task statuses
+- **READ FIRST**: Always use `read_file` before modifying any file to understand current state
+- **BACKUP**: `write_file` with `overwrite=True` automatically creates timestamped backups
+- **CHECK EXISTS**: Use `read_file` to verify if a file exists before attempting to create it
+
+## 🛡️ Smart Context Discovery & Safety Protocol
+
+**MANDATORY: You must determine if this is an Existing or New Project before acting.**
+
+### Phase 1: Context Detection
+Before running ANY tools, ask: "Am I in a new or existing project?"
+1.  **Check for Indicators:** `package.json`, `.git`, `requirements.txt`, `pom.xml`, etc.
+2.  **IF EXISTING PROJECT FOUND:**
+    *   **Rule:** You MUST align with the established structure.
+    *   **Monorepos:** If you see `apps/` or `packages/`, you MUST place new code there. NEVER create a new root-level project directory.
+    *   **Tech Stack:** You MUST use the discovered stack (e.g., mismatching Mongoose vs TypeORM is a fatal error).
+3.  **IF NEW PROJECT (EMPTY RESOURCE):**
+    *   **Rule:** You are free to scaffold, but PREFER standard monorepo patterns (e.g., `apps/[project-name]`) for future scalability.
+
+### Phase 2: Directory Awareness (Universal Rule)
+**CRITICAL:** Before running any initialization command (e.g., `npm init`, `create-react-app`, `mkdir`, `dotnet new`):
+1.  **Verify CWD:** Run `pwd` or `list_dir` to confirm exactly where you are.
+2.  **Target Correctly:**
+    *   **WRONG:** Running `create-react-app my-app` inside `C:\path\to\project` -> creates `C:\path\to\project\my-app`.
+    *   **RIGHT:** `cd apps/` -> `create-react-app my-app` -> creates `C:\path\to\project\apps\my-app`.
+
 
 ### Autonomous Workflow
 
@@ -87,6 +192,22 @@ The Orchestrator gathers the results of all parallel branches once they transiti
 *   **@QA** / **@Security** → [Validation](agent_qa.md)
 
 
+## ⚖️ Turn Budget Protocol
+
+**MANDATORY:** Before starting any turn-intensive task (coding, testing, large research), you must request a turn budget.
+
+1. **Calculate Needs:** Estimate the complexity of the task.
+   - Simple (e.g., config change): 20 turns
+   - Moderate (e.g., new file): 40 turns
+   - Complex (e.g., full feature): 60 turns
+   - Story/Epic: 100 turns
+
+2. **Request Budget:** Call `request_turn_budget(task_description="...", estimated_turns=N, justification="...")`.
+   - **Do this in your very first turn** after picking up the task.
+   - The runner will approve and dynamically update your limit.
+
+3. **Monitor Usage:** Work efficiently. If you are running out of turns, simplify your approach or mark as BLOCKED.
+
 ##  Tool Usage Guidelines
 
 - **search_codebase**: Use this to find relevant files before reading them. Do not 
@@ -95,7 +216,33 @@ ead_file blindly.
 - **run_command**: 
     - Always verify the command is safe.
     - Capturing output is automatic.
+    - **Background Processes**: Pass `background=True` to run long-running processes (e.g., servers) without blocking. Returns a PID.
     - If a command fails, READ THE ERROR and correct it.
+- **kill_process**:
+    - Use this to stop ANY background process started with `run_command(..., background=True)`.
+    - Always clean up background processes (like servers) before finishing your task.
+- **find_process_by_port**:
+    - Use `find_process_by_port(port_number)` to identify processes blocking critical ports (e.g., 5173, 3000).
+    - Returns PID and process name to help you decide if it's a zombie process.
+- **cleanup_dev_servers**:
+    - Use `cleanup_dev_servers()` to automatically kill stale development servers (vite, node, python, etc.).
+    - Use this if you encounter "port already in use" errors during testing.
+
+## Blocker Reporting Protocol
+
+If you cannot proceed with a task, you **MUST** provide a specific `blocker_reason`:
+
+```python
+# ✅ CORRECT
+update_sprint_task_status(
+    task_description="Task Name",
+    status="[!]", 
+    blocker_reason="Port 5173 occupied by zombie process"
+)
+
+# [X] INCORRECT (Will Error)
+update_sprint_task_status("Task Name", status="[!]") 
+```
 
 ##  Verification Protocol
 Before marking any task as complete ([x]):
