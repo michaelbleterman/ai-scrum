@@ -1127,7 +1127,67 @@ def save_learning(content: str, memory_type: str, metadata_json: str = "{}"):
         return f"Error saving learning: {e}"
 
 
-# Tool Definitions for Agent Consumption
+@log_tool_usage
+def send_message(recipient: str, content: str, message_type: str = "info"):
+    """
+    Send a message to another agent or broadcast to 'all'.
+    
+    Args:
+        recipient: Role of the agent (e.g., 'Backend', 'QA', 'Product_Management') or 'all'
+        content: Message content
+        message_type: Type of message ('info', 'request', 'notification', 'dependency')
+    """
+    messaging_manager = getattr(send_message, '_messaging_manager', None)
+    if not messaging_manager:
+        return "Messaging system not initialized."
+    
+    try:
+        msg_id = messaging_manager.send_message(
+            sender=getattr(send_message, '_agent_role', 'unknown'),
+            recipient=recipient,
+            content=content,
+            message_type=message_type
+        )
+        return f"Message sent successfully (ID: {msg_id})"
+    except Exception as e:
+        return f"Error sending message: {e}"
+
+
+@log_tool_usage
+def receive_messages(since_id: str = None):
+    """
+    Check for new messages addressed to this agent or 'all'.
+    
+    Args:
+        since_id: Optional ID of the last message received to get only newer ones.
+    
+    Returns:
+        List of messages as a formatted string.
+    """
+    messaging_manager = getattr(receive_messages, '_messaging_manager', None)
+    if not messaging_manager:
+        return "Messaging system not initialized."
+    
+    try:
+        role = getattr(receive_messages, '_agent_role', 'unknown')
+        messages = messaging_manager.get_messages(recipient=role, since_id=since_id)
+        
+        if not messages:
+            return "No new messages."
+            
+        output = []
+        for m in messages:
+            output.append(f"[{m['timestamp']}] FROM: {m['sender']} TYPE: {m['message_type']}")
+            output.append(f"CONTENT: {m['content']}")
+            output.append(f"ID: {m['message_id']}")
+            output.append("-" * 20)
+            
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error receiving messages: {e}"
+
+
+# --- Tool Definitions for Agent Consumption ---
 worker_tools = [
                      FunctionTool(list_dir),
                      FunctionTool(read_file),
@@ -1144,7 +1204,9 @@ worker_tools = [
                      FunctionTool(record_turn_usage),
                      FunctionTool(update_sprint_task_status),
                      FunctionTool(search_memory),
-                     FunctionTool(save_learning)
+                     FunctionTool(save_learning),
+                     FunctionTool(send_message),
+                     FunctionTool(receive_messages)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]

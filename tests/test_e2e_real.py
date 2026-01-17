@@ -146,11 +146,16 @@ class E2ERunner(unittest.TestCase):
             # Initialize Memory Bank
             memory_bank = SprintMemoryBank(project_root=self.BASE_DIR)
             
+            # Initialize Messaging Manager
+            from scripts.sprint_messaging import MessagingManager
+            messaging_manager = MessagingManager(project_root=self.BASE_DIR)
+            
             # Create runner and store in class variable
             E2ERunner.runner = SprintRunner(
                 agent_factory=agent_factory,
                 input_callback=mock_input,
-                memory_bank=memory_bank
+                memory_bank=memory_bank,
+                messaging_manager=messaging_manager
             )
             
             # Run the full cycle

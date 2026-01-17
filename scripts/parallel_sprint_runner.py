@@ -23,11 +23,14 @@ from sprint_tools import (
     update_sprint_header,
     search_memory,
     search_memory,
-    save_learning
+    save_learning,
+    send_message,
+    receive_messages
 )
 from sprint_memory import SprintMemoryBank
 from sprint_guardrails import AgentGuardrails
 from sprint_profile import ProfileManager
+from sprint_messaging import MessagingManager
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 from sprint_metadata import parse_task_metadata
 
@@ -212,7 +215,16 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
-async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, memory_bank=None, guardrails=None, profile_manager=None):
+async def run_parallel_execution(
+    session_service, 
+    framework_instruction, 
+    sprint_file, 
+    agent_factory=default_agent_factory, 
+    memory_bank=None, 
+    guardrails=None, 
+    profile_manager=None,
+    messaging_manager=None
+):
     log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
     await update_sprint_header("In Progress", SprintConfig.get_sprint_dir())
     
@@ -272,6 +284,13 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     desc = task_info["desc"]
                     status = task_info["status"]
                     blocker_reason = task_info.get("blocker_reason")
+                    
+                    # --- Inject Messaging Context ---
+                    if messaging_manager:
+                        send_message._messaging_manager = messaging_manager
+                        receive_messages._messaging_manager = messaging_manager
+                        send_message._agent_role = role_raw
+                        receive_messages._agent_role = role_raw
                     
                     if guardrails:
                         # --- Guardrails Input Validation ---
@@ -864,11 +883,12 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
 
 # --- Lifecycle Runner ---
 class SprintRunner:
-    def __init__(self, agent_factory=default_agent_factory, input_callback=None, memory_bank=None):
+    def __init__(self, agent_factory=default_agent_factory, input_callback=None, memory_bank=None, messaging_manager=None):
         self.agent_factory = agent_factory
         self.input_callback = input_callback
         self.session_service = InMemorySessionService()
         self.memory_bank = memory_bank
+        self.messaging_manager = messaging_manager
         
         # Initialize guardrails
         self.guardrails = AgentGuardrails(
@@ -922,7 +942,14 @@ class SprintRunner:
             
             # 1. Execute Pending
             tasks_run = await run_parallel_execution(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory, memory_bank=self.memory_bank, guardrails=self.guardrails, profile_manager=self.profile_manager
+                self.session_service, 
+                framework_instruction, 
+                latest_sprint, 
+                self.agent_factory, 
+                memory_bank=self.memory_bank, 
+                guardrails=self.guardrails, 
+                profile_manager=self.profile_manager,
+                messaging_manager=self.messaging_manager
             )
             
             # 2. QA
@@ -977,11 +1004,18 @@ async def main(project_root=None):
     memory_bank = SprintMemoryBank(SprintConfig.PROJECT_ROOT, enable_memory=enable_memory)
     log(f"Memory Bank: {memory_bank.get_statistics()}")
     
+    # Initialize messaging manager
+    messaging_manager = MessagingManager(SprintConfig.PROJECT_ROOT)
+    
     # Inject memory bank into tools
     search_memory._memory_bank = memory_bank
     save_learning._memory_bank = memory_bank
     
-    runner = SprintRunner(memory_bank=memory_bank)
+    # Inject messaging manager into tools
+    send_message._messaging_manager = messaging_manager
+    receive_messages._messaging_manager = messaging_manager
+    
+    runner = SprintRunner(memory_bank=memory_bank, messaging_manager=messaging_manager)
     try:
         await runner.run_cycle()
     except asyncio.CancelledError:
