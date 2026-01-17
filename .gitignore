@@ -6,3 +6,5 @@ __pycache__/
 *.log
 logs/
 project_tracking/
+
+app.py  # Prevent DevOps agent from creating test Flask apps

@@ -12,7 +12,7 @@ Generate a comprehensive sprint report and update the backlog with lessons learn
 
 **User Feedback:**
 
-{user_feedback}
+{{user_feedback}}
 
 **Instructions:**
 

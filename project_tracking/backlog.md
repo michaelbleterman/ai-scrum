@@ -1,12 +1,25 @@
-# Backlog
 
-## New User Stories & Enhancements
-- **Story:** Explore enhancements based on positive user feedback
-    - **Priority:** Medium
-    - **Acceptance Criteria:** Research common user requests for similar functionalities, identify potential next features.
+## Retrospective Action Items (From Sprint E2E Retrospective)
 
-## Process Improvement Tasks
-- **Task:** Refine backend task estimation process
+### Bug Fixes
+- **Story:** Fix `add(a, b)` function in `project_tracking/dummy_math.py`.
     - **Priority:** High
-    - **Description:** Analyze historical turn usage for backend tasks to develop more accurate estimation guidelines for future sprints.
-    - **Acceptance Criteria:** Document updated estimation guidelines, conduct a review with development team.
+    - **Acceptance Criteria:**
+        - The `add(a, b)` function in `project_tracking/dummy_math.py` returns `a + b`.
+        - A unit test is added to `dummy_math.py` to verify the correct addition.
+    - **Role:** @Backend
+
+### Process Improvements
+- **Task:** Implement linter/pre-commit hook for sprint file formatting.
+    - **Priority:** Medium
+    - **Acceptance Criteria:**
+        - A mechanism (linter/hook) is in place to validate sprint file formatting.
+        - Sprint files consistently use `[POINTS:N]` and `[TURNS_ESTIMATED:N]` tags.
+    - **Role:** @DevOps
+
+- **Task:** Make `QA_REPORT.md` generation mandatory for every sprint.
+    - **Priority:** Medium
+    - **Acceptance Criteria:**
+        - `QA_REPORT.md` is consistently generated at the end of each sprint.
+        - `QA_REPORT.md` follows a predefined template.
+    - **Role:** @QA

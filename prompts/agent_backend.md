@@ -97,7 +97,7 @@ if missing_vars:
     update_sprint_task_status(
         task_description="Implement Password Reset Request API",
         status="[!]",
-        blocker_reason=f"Missing environment variables: {', '.join(missing_vars)} - configure in .env"
+        blocker_reason=f"Missing environment variables: {{', '.join(missing_vars)}} - configure in .env"
     )
     # STOP - can't implement without SMTP config
 ```

@@ -22,15 +22,64 @@ from sprint_tools import (
     update_sprint_task_status, 
     update_sprint_header,
     search_memory,
+    search_memory,
     save_learning
 )
 from sprint_memory import SprintMemoryBank
 from sprint_guardrails import AgentGuardrails
+from sprint_profile import ProfileManager
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 from sprint_metadata import parse_task_metadata
 
 import logging
 from logging.handlers import RotatingFileHandler
+
+# --- Prompt Sanitization ---
+def sanitize_prompt_for_adk(prompt_text):
+    """
+    Sanitize prompt text to prevent ADK template variable substitution errors.
+    
+    The ADK processes entire instruction strings and tries to substitute {variable_name} 
+    patterns using str.isidentifier(). This function injects a Zero Width Space (\u200b)
+    into curly-brace patterns within code blocks to make them invalid identifiers,
+    causing the ADK to ignore them while remainining invisible to the LLM.
+    
+    Args:
+        prompt_text: Raw prompt text loaded from markdown files
+        
+    Returns:
+        Sanitized prompt text with "poisoned" identifiers in code blocks
+    """
+    if not prompt_text:
+        return prompt_text
+    
+    # Pattern to match code blocks (triple backticks)
+    code_block_pattern = r'```[\s\S]*?```'
+    
+    def poison_identifiers(match):
+        """Inject zero-width space into {identifier} patterns"""
+        content = match.group(0)
+        # Find anything that looks like {var} or {var.attr} or {var[key]}
+        # and inject \u200b after the first character of the potential identifier
+        def replacer(m):
+            braces = m.group(1) # { or {{ or {{{
+            identifier = m.group(2) # the actual name
+            rest = m.group(3) # } or }} or }}}
+            if identifier and identifier[0].isalpha():
+                return f"{braces}{identifier[0]}\u200b{identifier[1:]}{rest}"
+            return m.group(0)
+
+        # Regex to find {identifier} patterns
+        # Group 1: Opening braces
+        # Group 2: Potential identifier start (alpha + alnum/dot/underscore/bracket)
+        # Group 3: Closing braces
+        sanitized_content = re.sub(r'(\{+)([a-zA-Z][a-zA-Z0-9_\.\[\]\"\'\-]*)(\}+)', replacer, content)
+        return sanitized_content
+    
+    # Apply poisoning only to code blocks
+    sanitized = re.sub(code_block_pattern, poison_identifiers, prompt_text)
+    
+    return sanitized
 
 # --- Logging Setup ---
 def setup_logging(project_root=None):
@@ -163,7 +212,7 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
-async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, memory_bank=None, guardrails=None):
+async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, memory_bank=None, guardrails=None, profile_manager=None):
     log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
     await update_sprint_header("In Progress", SprintConfig.get_sprint_dir())
     
@@ -276,7 +325,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, prompt_file)
                     if os.path.exists(prompt_path):
                         with open(prompt_path, "r", encoding="utf-8") as f:
-                            instruction = f.read()
+                            instruction = sanitize_prompt_for_adk(f.read())
                     else:
                         instruction = f"Act as {role}."
 
@@ -303,6 +352,16 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         f"Do NOT introduce new languages or frameworks.\n"
                         f"========================\n"
                     )
+                    
+                    # --- Profiling: Load and Inject Profile ---
+                    profile_context = ""
+                    if profile_manager:
+                         profile = profile_manager.get_profile(name=role_raw, role=role_raw)
+                         profile_context = f"\n\n=== AGENT PROFILE ===\n"
+                         profile_context += f"Identity: {profile.name} (Level {profile.level} {profile.role})\n"
+                         profile_context += f"XP: {profile.total_xp} | Success Rate: {profile.stats.get('success_rate', 0)}%\n"
+                         if profile.skills:
+                             profile_context += f"Skills: {', '.join(profile.skills)}\n"
 
                     # --- Memory Recall ---
                     memory_context = ""
@@ -321,7 +380,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         except Exception as mem_err:
                             log(f"    [Memory Recall] Failed: {mem_err}")
                     
-                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{project_context_instruction}\n{memory_context}\n\nTask: {desc}"
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{profile_context}\n{project_context_instruction}\n{memory_context}\n\nTask: {desc}"
                     
                     # Add status-specific instructions
                     if status == "in_progress":
@@ -441,6 +500,16 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         # Record success for circuit breaker
                         if guardrails:
                             guardrails.record_action(desc, success=True)
+                            
+                        # Update Profile (XP)
+                        if profile_manager:
+                            points = 10 # Default base XP
+                            if "POINTS:" in desc:
+                                try:
+                                    points = int(desc.split("POINTS:")[1].split("|")[0].split("]")[0]) * 10
+                                except:
+                                    pass
+                            profile_manager.update_profile(role_raw, xp_gain=points, success=True, turns=actual_turns)
                         
                         # DIRECT UPDATE: Mark done
                         await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
@@ -467,6 +536,10 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         # Record failure for circuit breaker
                         if guardrails:
                             guardrails.record_action(desc, success=False)
+                            
+                        # Update Profile (Failure)
+                        if profile_manager:
+                            profile_manager.update_profile(role_raw, xp_gain=1, success=False, turns=actual_turns)
                         
                         # Store failure in memory
                         if memory_bank and memory_bank.enable_memory:
@@ -543,7 +616,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     qa_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_qa.md")
     if os.path.exists(qa_prompt_path):
         with open(qa_prompt_path, "r", encoding="utf-8") as f:
-             qa_instruction = f.read()
+             qa_instruction = sanitize_prompt_for_adk(f.read())
     else:
         qa_instruction = "You are the QA Engineer."
 
@@ -554,10 +627,10 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     )
 
     # Load DevOps QA Setup prompt
-    devops_qa_setup_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops_qa_setup.md")
+    devops_qa_setup_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops.md")  # Consolidated QA setup in main DevOps prompt
     if os.path.exists(devops_qa_setup_prompt_path):
         with open(devops_qa_setup_prompt_path, "r", encoding="utf-8") as f:
-            devops_setup_instruction = f.read()
+            devops_setup_instruction = sanitize_prompt_for_adk(f.read())
     else:
         devops_setup_instruction = "Prepare the test environment for QA execution."
 
@@ -631,7 +704,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     async def run_qa():
         nonlocal defects_created
         turn_count = 0
-        max_turns = 40
+        max_turns = 100  # Increased from 40 to handle complex QA scenarios
         async for event in runner.run_async(
             user_id="user", 
             session_id=qa_pid, 
@@ -667,7 +740,7 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
     demo_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_orchestrator_demo.md")
     if os.path.exists(demo_prompt_path):
         with open(demo_prompt_path, "r", encoding="utf-8") as f:
-            demo_instruction = f.read()
+            demo_instruction = sanitize_prompt_for_adk(f.read())
     else:
         demo_instruction = "Prepare a Demo Walkthrough."
 
@@ -745,7 +818,7 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     retro_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_pm_retrospective.md")
     if os.path.exists(retro_prompt_path):
         with open(retro_prompt_path, "r", encoding="utf-8") as f:
-            pm_retro_instruction = f.read()
+            pm_retro_instruction = sanitize_prompt_for_adk(f.read())
             # Inject user feedback into the template
             user_feedback_text = demo_feedback if demo_feedback else "None provided."
             pm_retro_instruction = pm_retro_instruction.replace("{user_feedback}", user_feedback_text)
@@ -804,6 +877,9 @@ class SprintRunner:
             enable_content_filter=True,
             enable_circuit_breaker=True
         )
+        
+        # Initialize Profiling
+        self.profile_manager = ProfileManager(SprintConfig.get_sprint_dir())
 
     async def run_cycle(self):
         SprintConfig.validate()
@@ -834,7 +910,7 @@ class SprintRunner:
         framework_instruction = ""
         if os.path.exists(framework_index_path):
             with open(framework_index_path, "r", encoding="utf-8") as f:
-                framework_instruction = f.read()
+                framework_instruction = sanitize_prompt_for_adk(f.read())
 
         # == Execution Loop (Exec -> QA -> Defect -> Exec) ==
         loop_count = 0
@@ -846,7 +922,7 @@ class SprintRunner:
             
             # 1. Execute Pending
             tasks_run = await run_parallel_execution(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory, memory_bank=self.memory_bank, guardrails=self.guardrails
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory, memory_bank=self.memory_bank, guardrails=self.guardrails, profile_manager=self.profile_manager
             )
             
             # 2. QA
