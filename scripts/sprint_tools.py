@@ -9,6 +9,23 @@ from sprint_utils import detect_latest_sprint_file
 # Global registry for background processes
 _background_processes = {}
 
+import atexit
+
+def terminate_all_background_processes():
+    """Cleanup all background processes initiated by run_command"""
+    if not _background_processes:
+        return
+        
+    logger = logging.getLogger("SprintRunner")
+    logger.info(f"[Cleanup] Terminating {len(_background_processes)} background processes...")
+    
+    pids = list(_background_processes.keys())
+    for pid in pids:
+        kill_process(pid)
+
+atexit.register(terminate_all_background_processes)
+
+
 # --- Tool Logging Decorator ---
 def log_tool_usage(func):
     @functools.wraps(func)

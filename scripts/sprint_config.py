@@ -8,7 +8,7 @@ class SprintConfig:
     """Configuration for the Sprint Runner."""
     
     # Google Cloud Settings
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     
     # Agent Settings
     MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
@@ -69,17 +69,17 @@ class SprintConfig:
         # Model mapping based on agent complexity and requirements
         model_mapping = {
             # High complexity - need advanced reasoning
-            "orchestrator": os.getenv("MODEL_ORCHESTRATOR", "gemini-2.5-pro"),
-            "qa_engineer": os.getenv("MODEL_QA", "gemini-2.5-pro"),
-            "qa": os.getenv("MODEL_QA", "gemini-2.5-pro"),
+            "orchestrator": os.getenv("MODEL_ORCHESTRATOR", "gemini-pro-latest"),
+            "qa_engineer": os.getenv("MODEL_QA", "gemini-pro-latest"),
+            "qa": os.getenv("MODEL_QA", "gemini-pro-latest"),
             
             # Medium-high complexity - balanced performance
-            "backend": os.getenv("MODEL_BACKEND", "gemini-2.5-flash"),
-            "frontend": os.getenv("MODEL_FRONTEND", "gemini-2.5-flash"),
-            "devops": os.getenv("MODEL_DEVOPS", "gemini-2.5-flash"),
-            "security": os.getenv("MODEL_SECURITY", "gemini-2.5-flash"),
-            "productmanager": os.getenv("MODEL_PM", "gemini-2.5-flash"),
-            "pm": os.getenv("MODEL_PM", "gemini-2.5-flash"),
+            "backend": os.getenv("MODEL_BACKEND", "gemini-pro-latest"),
+            "frontend": os.getenv("MODEL_FRONTEND", "gemini-pro-latest"),
+            "devops": os.getenv("MODEL_DEVOPS", "gemini-pro-latest"),
+            "security": os.getenv("MODEL_SECURITY", "gemini-pro-latest"),
+            "productmanager": os.getenv("MODEL_PM", "gemini-pro-latest"),
+            "pm": os.getenv("MODEL_PM", "gemini-pro-latest"),
         }
         
         # Normalize agent name: lowercase, remove spaces and underscores

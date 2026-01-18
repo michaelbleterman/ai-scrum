@@ -399,7 +399,24 @@ async def run_parallel_execution(
                         except Exception as mem_err:
                             log(f"    [Memory Recall] Failed: {mem_err}")
                     
-                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{profile_context}\n{project_context_instruction}\n{memory_context}\n\nTask: {desc}"
+                    # --- Messaging Injection ---
+                    messaging_context = ""
+                    if messaging_manager:
+                        pending_messages = messaging_manager.get_messages(recipient=role_raw)
+                        # Filter for unread or relevant context if needed, for now we show all 'pending' 
+                        # In a real system we might track 'read' state per agent-task session.
+                        # For now, we show strictly all messages for them.
+                        if pending_messages:
+                            log(f"    [Task {task_index+1}] Injecting {len(pending_messages)} pending messages for @{role_raw}")
+                            messaging_context = "\n\n=== ✉️ PENDING MESSAGES ===\n"
+                            messaging_context += "You have unread messages. Review and acknowledge them immediately:\n"
+                            for msg in pending_messages:
+                                msg_type = msg.get('message_type', 'info').upper()
+                                is_broadcast = " (BROADCAST)" if msg.get('recipient') == 'all' else ""
+                                messaging_context += f"- [{msg['timestamp']}] FROM @{msg['sender']} [{msg_type}]{is_broadcast}: {msg['content']}\n"
+                            messaging_context += "===========================\n"
+
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{profile_context}\n{project_context_instruction}\n{memory_context}\n{messaging_context}\n\nTask: {desc}"
                     
                     # Add status-specific instructions
                     if status == "in_progress":
@@ -741,11 +758,18 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
                         logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
                         if part.function_call.name == "add_sprint_task":
                             defects_created = True
+                        elif part.function_call.name == "update_sprint_task_status":
+                            # If QA re-opens a task (Todo or Blocked), treat it as a defect/work-item finding
+                            args = part.function_call.args
+                            status = args.get("status", "")
+                            if status in ["[ ]", "[!]"]:
+                                defects_created = True
+                                log(f"    [QA] Task re-opened/blocked ({status}). Will trigger execution loop.")
 
     await run_qa()
     
     if defects_created:
-        log("    [QA] Defects were found and added to the sprint.")
+        log("    [QA] Defects were found (New or Re-opened). Rerunning execution phase...")
         return True
     
     log("    [QA] Verification complete. No new defects reported.")
@@ -972,14 +996,35 @@ class SprintRunner:
             log("WARNING: Max sprint cycles reached. Proceeding to Retro despite potential issues.")
 
         # 3. Demo
-        feedback = await run_demo_phase(
-            self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback
-        )
+        try:
+            feedback = await asyncio.wait_for(
+                run_demo_phase(
+                    self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback
+                ),
+                timeout=300
+            )
+        except asyncio.TimeoutError:
+            log("WARNING: Demo phase timed out (300s). Proceeding to Retro.")
+            feedback = "Demo phase timed out."
+        except Exception as e:
+            log(f"WARNING: Demo phase failed: {e}")
+            feedback = "Demo phase failed."
         
         # 4. Retro
-        await run_retro_phase(
-            self.session_service, framework_instruction, latest_sprint, feedback, self.agent_factory
-        )
+        try:
+            await asyncio.wait_for(
+                run_retro_phase(
+                    self.session_service, framework_instruction, latest_sprint, feedback, self.agent_factory
+                ),
+                timeout=300
+            )
+        except asyncio.TimeoutError:
+             log("WARNING: Retro phase timed out (300s). Finishing.")
+        except Exception as e:
+             log(f"WARNING: Retro phase failed: {e}")
+        
+        # Explicit cleanup of any sessions if possible
+        # (SessionService internal details dependent)
         
         log("\n[*] Mission execution complete.")
 

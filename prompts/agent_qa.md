@@ -326,10 +326,16 @@ For each task in your verification list:
       - **Test Code Issue**: Test syntax error, incorrect selectors, async timing issues, flaky test
       - **Application Defect**: Actual bug in the feature being tested
    
-   c) **Take Appropriate Action:**
-      - **Environment Issue** → Document as blocker, stop testing, report to team
-      - **Test Code Issue** → Fix the test code and re-run
-      - **Application Defect** → Use `add_sprint_task` to create task: `DEFECT: [description]`
+   c) **Take Appropriate Action (CRITICAL):**
+      - **Environment Issue** → Document as blocker, stop testing.
+      - **Test Code Issue** → Fix the test code and re-run.
+      - **Application Defect** →
+      - **Application Defect** →
+          - **IF TASK ALREADY EXISTS:** Call `update_sprint_task_status(task_description="...", status="[ ]")` to **RE-OPEN** it. 
+              - **CRITICAL:** You **MUST** call this tool even if the status is already `[ ]`. This signals the Runner to schedule a fix. 
+              - If you do not call this tool, the defects will be ignored.
+          - **IF NEW DEFECT:** Call `add_sprint_task(role="...", task_description="DEFECT: [Description]. EXPECTED: [Correct Behavior]. ACTUAL: [Current Behavior]")`.
+          - **CRITICAL:** You MUST specify the EXPECTED behavior so the developer knows what to fix.
    
 4. **Strategic Retry Logic:**
    - If a test fails twice with the same error, INVESTIGATE before third attempt

@@ -62,6 +62,11 @@ class SmokeTest(unittest.TestCase):
 ### @Backend Tasks
 - [ ] Create `project_tracking/smoke_test.txt` with content "Smoke test passed" [POINTS:1].
 """)
+        
+        # Clean messages.json to prevent bloat
+        messages_path = os.path.join(self.SPRINT_DIR, "messages.json")
+        if os.path.exists(messages_path):
+            os.remove(messages_path)
 
     def tearDown(self):
         """Cleanup after test"""
