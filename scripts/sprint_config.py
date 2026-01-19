@@ -80,6 +80,9 @@ class SprintConfig:
             "security": os.getenv("MODEL_SECURITY", "gemini-2.0-flash"),
             "productmanager": os.getenv("MODEL_PM", "gemini-2.0-flash"),
             "pm": os.getenv("MODEL_PM", "gemini-2.0-flash"),
+            
+            # Reviewer - Critical reasoning capability required
+            "reviewer": os.getenv("MODEL_REVIEWER", "gemini-2.5-pro"),
         }
         
         # Normalize agent name: lowercase, remove spaces and underscores
@@ -96,5 +99,6 @@ class SprintConfig:
             "DevOps": "agent_devops.md",
             "QA": "agent_qa.md",
             "Security": "agent_security.md",
-            "PM": "agent_product_management.md"
+            "PM": "agent_product_management.md",
+            "Reviewer": "agent_reviewer.md"
         }

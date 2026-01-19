@@ -208,6 +208,18 @@ def run_command(command: str, background: bool = False):
         
         # PAGER=cat to avoid hanging on long output
         env = os.environ.copy()
+        
+        # --- PATH Injection (Fix for E2E Tests) ---
+        # Ensure Python Scripts directory is in PATH so agents can find 'pytest', 'pip', etc.
+        import sys
+        current_python = sys.executable
+        if current_python:
+            scripts_dir = os.path.join(os.path.dirname(current_python), 'Scripts')
+            # Prepend to PATH to favor current env
+            if os.path.isdir(scripts_dir):
+                env["PATH"] = scripts_dir + os.pathsep + env.get("PATH", "")
+        # ------------------------------------------
+
         env["PAGER"] = "cat"
         # Force non-interactive modes
         env["CI"] = "true"
@@ -1297,6 +1309,128 @@ def receive_messages(since_id: str = None):
         return f"Error receiving messages: {e}"
 
 
+
+@log_tool_usage
+def broadcast_message(content: str, message_type: str = "announcement"):
+    """
+    Broadcasts a message to ALL agents (Reviewer, Backend, QA, etc.).
+    Use this to warn about systemic issues or breaking changes.
+    
+    Args:
+        content: The message content
+        message_type: 'announcement', 'warning', 'critical'
+    """
+    return send_message(recipient="all", content=content, message_type=message_type)
+
+@log_async_tool_usage
+async def add_task_context(task_description: str, context_note: str, sprint_dir: str = "project_tracking"):
+    """
+    Appends a context note to a task in the sprint file WITHOUT changing its status.
+    Useful for the Reviewer to add research notes, API details, or warnings.
+    
+    Args:
+        task_description: The text of the task to find.
+        context_note: The note to append (will be added as a sub-bullet or bracketed text).
+        sprint_dir: Directory containing sprint files.
+    """
+    from sprint_utils import detect_latest_sprint_file
+    import msvcrt
+    
+    # Fix for path if not absolute
+    if not os.path.isabs(sprint_dir):
+         sprint_dir = os.path.abspath(os.path.join(os.getcwd(), sprint_dir))
+
+    sprint_file = detect_latest_sprint_file(sprint_dir)
+    if not sprint_file:
+        return "Error: No sprint files found."
+
+    try:
+        # Use simple file read/write with logic to append note
+        # We need to be careful with file locking
+        max_retries = 5
+        import asyncio
+        for attempt in range(max_retries):
+            try:
+                with open(sprint_file, "r+", encoding="utf-8") as f:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    lines = f.readlines()
+                    
+                    updated_lines = []
+                    found = False
+                    
+                    for line in lines:
+                        if task_description in line and "- [" in line:
+                            # Avoid duplicates
+                            if context_note in line:
+                                updated_lines.append(line)
+                            else:
+                                # Append note. If line ends with newline, strip it first.
+                                clean_line = line.rstrip()
+                                # Check if we already have a wrapper
+                                updated_lines.append(f"{clean_line} [NOTE: {context_note}]\n")
+                                found = True
+                        else:
+                            updated_lines.append(line)
+                    
+                    if found:
+                        f.seek(0)
+                        f.writelines(updated_lines)
+                        f.truncate()
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                        return f"Added context to task: {task_description}"
+                    
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    if not found:
+                         return f"Task not found: {task_description}"
+
+            except IOError:
+                await asyncio.sleep(0.1 * (2 ** attempt))
+            except Exception as e:
+                return f"Error updating file: {e}"
+                
+        return "Error: Failed to lock file for update."
+    except Exception as e:
+        return f"Error adding context: {e}"
+
+@log_tool_usage
+def search_web(query: str):
+    """
+    Performs a web search using Google Custom Search API.
+    Use this to find library documentation, latest versions, or solve errors.
+    
+    Args:
+        query: Search query string.
+    """
+    try:
+        from googleapiclient.discovery import build
+        
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        # CSE ID should be in env, or we warn.
+        cse_id = os.getenv("GOOGLE_CSE_ID")
+        
+        if not api_key or not cse_id:
+            return "Error: GOOGLE_API_KEY and GOOGLE_CSE_ID must be set in .env for web search."
+            
+        service = build("customsearch", "v1", developerKey=api_key)
+        res = service.cse().list(q=query, cx=cse_id, num=5).execute()
+        
+        items = res.get("items", [])
+        if not items:
+            return "No results found."
+            
+        results = []
+        for item in items:
+            title = item.get("title")
+            link = item.get("link")
+            snippet = item.get("snippet")
+            results.append(f"Title: {title}\nURL: {link}\nSnippet: {snippet}\n")
+            
+        return "\n---\n".join(results)
+    except ImportError:
+        return "Error: google-api-python-client not installed. Please install it."
+    except Exception as e:
+        return f"Error performing web search: {e}"
+
 # --- Tool Definitions for Agent Consumption ---
 worker_tools = [
                      FunctionTool(list_dir),
@@ -1322,5 +1456,20 @@ worker_tools = [
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]
 
 qa_tools = worker_tools + [FunctionTool(add_sprint_task)]
+
+
+reviewer_tools = [
+    FunctionTool(list_dir),
+    FunctionTool(read_file),
+    FunctionTool(search_codebase),
+    FunctionTool(search_web),
+    FunctionTool(update_sprint_task_status), # For blocking/clarifying usage in future
+    FunctionTool(add_task_context),
+    FunctionTool(send_message),
+    FunctionTool(broadcast_message),
+    FunctionTool(discover_project_context),
+    FunctionTool(search_memory),
+    FunctionTool(receive_messages)
+]
 
 pm_tools = worker_tools + [FunctionTool(add_sprint_task), FunctionTool(analyze_turn_metrics)]
