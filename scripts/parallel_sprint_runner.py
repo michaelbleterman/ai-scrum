@@ -26,7 +26,11 @@ from sprint_tools import (
     save_learning,
     send_message,
     receive_messages,
-    current_messaging_context
+    save_learning,
+    send_message,
+    receive_messages,
+    current_messaging_context,
+    reviewer_tools
 )
 from sprint_memory import SprintMemoryBank
 from sprint_guardrails import AgentGuardrails
@@ -286,6 +290,7 @@ async def run_parallel_execution(
                     status = task_info["status"]
                     blocker_reason = task_info.get("blocker_reason")
                     
+                    
                     # --- Inject Messaging Context ---
                     messaging_token = None
                     if messaging_manager:
@@ -375,6 +380,93 @@ async def run_parallel_execution(
                         f"Do NOT introduce new languages or frameworks.\n"
                         f"========================\n"
                     )
+
+                    # --- Reviewer Step (New) ---
+                    # Only run review for tasks that are NOT already in progress (to avoid re-reviewing active work)
+                    # and not blocked (unless we decide to review blocked tasks to unblock them? For now, standard flow)
+                    if status == "todo":
+                        log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Starting Reviewer for: @{role_raw}: {desc}")
+                        
+                        reviewer_agent = agent_factory(
+                            name=f"Reviewer_{task_index}",
+                            instruction="", # Will be loaded from file in factory or below
+                            tools=reviewer_tools,
+                            agent_role="Reviewer"
+                        )
+                        
+                        # Load Reviewer Prompt
+                        rev_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_reviewer.md")
+                        if os.path.exists(rev_prompt_path):
+                             with open(rev_prompt_path, "r", encoding="utf-8") as f:
+                                reviewer_instruction = sanitize_prompt_for_adk(f.read())
+                        else:
+                            reviewer_instruction = "You are the Task Reviewer. Validate the task."
+                            
+                        # Context for Reviewer
+                        rev_full_instruction = (
+                            f"{framework_instruction}\n\n{reviewer_instruction}\n"
+                            f"\n=== TARGET TASK ===\n"
+                            f"Role: {role_raw}\n"
+                            f"Description: {desc}\n"
+                            f"===================\n"
+                            f"{project_context_instruction}" 
+                        )
+                        
+                        # Update agent instruction
+                        reviewer_agent._instruction = rev_full_instruction
+                        
+                        # Run Reviewer
+                        rev_pid = f"reviewer_{task_index}_{os.urandom(4).hex()}"
+                        await session_service.create_session(app_name="SprintRunner", user_id="user", session_id=rev_pid)
+                        rev_runner = Runner(app_name="SprintRunner", agent=reviewer_agent, session_service=session_service)
+                        
+                        review_decision = "APPROVE" # Default
+                        review_critique = ""
+                        
+                        try:
+                            # Limited turns for reviewer
+                            async for rev_event in rev_runner.run_async(
+                                user_id="user", 
+                                session_id=rev_pid, 
+                                new_message=types.Content(parts=[types.Part(text=f"Review this task: {desc}")])
+                            ):
+                                if rev_event.content and rev_event.content.parts:
+                                    for part in rev_event.content.parts:
+                                        if part.text:
+                                            text = part.text
+                                            logger.info(f"[Reviewer] {text}")
+                                            
+                                            # Parse Decision
+                                            if "DECISION: BLOCK" in text:
+                                                review_decision = "BLOCK"
+                                            elif "DECISION: WARN" in text:
+                                                review_decision = "WARN"
+                                            
+                                            if "REASON:" in text:
+                                                pass # Could parse reason
+                                            
+                                            review_critique += text + "\n"
+                                            
+                        except Exception as rev_e:
+                            log(f"    [Reviewer] Failed: {rev_e}. Proceeding with CAUTION.")
+                            review_critique += f"\n[System Error] Reviewer crashed: {rev_e}"
+                            
+                        log(f"    [Reviewer] Decision: {review_decision}")
+                        
+                        if review_decision == "BLOCK":
+                            log(f"    [Worker {worker_id}] Task BLOCKED by Reviewer.")
+                            await update_sprint_task_status(
+                                desc, "[!]", 
+                                blocker_reason=f"Reviewer Block: See logs/context. {review_critique[:100]}...",
+                                sprint_dir=SprintConfig.get_sprint_dir()
+                            )
+                            queue.task_done()
+                            continue
+                        
+                        if review_decision == "WARN":
+                             # Append critique to the task description or just context for the next agent
+                             # We'll inject it into the main agent's instruction prompt
+                             task_info["reviewer_note"] = f"\n\n=== ⚠️  REVIEWER WARNING ===\n{review_critique}\n==========================\n"
                     
                     # --- Profiling: Load and Inject Profile ---
                     profile_context = ""
@@ -447,6 +539,11 @@ async def run_parallel_execution(
                             "======================"
                         )
                         full_instruction += unblock_instruction
+                    
+                    # Inject Reviewer Notes if any
+                    if "reviewer_note" in task_info:
+                        full_instruction += task_info["reviewer_note"]
+                        log(f"    [Task {task_index+1}] Injected Reviewer Warnings")
                         log(f"    [Task {task_index+1}] Adding UNBLOCK instruction" + (f" (Reason: {blocker_reason})" if blocker_reason else ""))
                     
                     agent = agent_factory(
@@ -530,6 +627,7 @@ async def run_parallel_execution(
 
                         return turn_count
 
+                    actual_turns = 0
                     try:
                         actual_turns = await run_agent()
                         log(f"    [Task {task_index+1}] Completed @{role_raw} in {actual_turns} turns")
@@ -640,16 +738,23 @@ async def run_parallel_execution(
     # Wait until all worker tasks are cancelled
     await asyncio.gather(*workers, return_exceptions=True)
     
-    return len(tasks_to_execute)
+    return tasks_to_execute
 
 # --- Phase 2: QA & Validation ---
-async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, messaging_manager=None):
+async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, messaging_manager=None, focused_tasks=None):
     log("\n[Phase 2] QA Verification: Validating completed tasks...")
     await update_sprint_header("QA", SprintConfig.get_sprint_dir())
     
     all_tasks = get_all_sprint_tasks(sprint_file)
     review_tasks = [t for t in all_tasks if t['status'] == 'done']
     
+    # Focused QA: Only verify tasks that were attempted/modified in this cycle
+    if focused_tasks is not None:
+        focused_descs = set(t['desc'] for t in focused_tasks)
+        # Filter review tasks to only those in the focused set
+        review_tasks = [t for t in review_tasks if t['desc'] in focused_descs]
+        log(f"    [Focused QA] Restricted verification to {len(review_tasks)} tasks executed this cycle.")
+
     if not review_tasks:
         log("    No tasks to review.")
         return False
@@ -1026,14 +1131,15 @@ class SprintRunner:
             # 2. QA
             defects_found = await run_qa_phase(
                 self.session_service, framework_instruction, latest_sprint, self.agent_factory,
-                messaging_manager=self.messaging_manager
+                messaging_manager=self.messaging_manager,
+                focused_tasks=tasks_run
             )
             
             if defects_found:
                 log("    [!] Defects found. Rerunning execution phase for new tasks...")
                 continue
             else:
-                if tasks_run == 0 and loop_count > 1:
+                if len(tasks_run) == 0 and loop_count > 1:
                     break
                     
                 if defects_found is False:
