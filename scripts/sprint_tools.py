@@ -5,6 +5,10 @@ import logging
 import functools
 from google.adk.tools import FunctionTool
 from sprint_utils import detect_latest_sprint_file
+import contextvars
+
+# Global Context for Messaging (manager, role, seen_ids)
+current_messaging_context = contextvars.ContextVar("messaging_context", default=None)
 
 # Global registry for background processes
 _background_processes = {}
@@ -34,6 +38,39 @@ def log_tool_usage(func):
         try:
             logger.info(f"[Tool] Invoking {func.__name__}")
             result = func(*args, **kwargs)
+            
+            # --- Auto-Inject Messages ---
+            try:
+                ctx = current_messaging_context.get()
+                if ctx and ctx.get("manager"):
+                    manager = ctx["manager"]
+                    role = ctx["role"]
+                    seen_ids = ctx.setdefault("seen_ids", set())
+                    
+                    # Check for new messages
+                    # We only check 'info' or 'priority' messages to avoid noise? 
+                    # For now get all and filter duplicates.
+                    all_msgs = manager.get_messages(recipient=role)
+                    new_msgs = [m for m in all_msgs if m['message_id'] not in seen_ids]
+                    
+                    if new_msgs:
+                        msg_notification = "\n\n=== 🔔 NEW MESSAGES RECEIVED ===\n"
+                        for m in new_msgs:
+                            seen_ids.add(m['message_id'])
+                            msg_notification += f"FROM @{m['sender']}: {m['content']}\n"
+                        msg_notification += "================================\n"
+                        
+                        # Append to result if result is string
+                        if isinstance(result, str):
+                            result += msg_notification
+                        elif isinstance(result, dict):
+                            result["_system_notification"] = msg_notification.strip()
+                        elif isinstance(result, list):
+                            result.append(msg_notification.strip())
+            except Exception as msg_e:
+                logger.error(f"[Tool] Message injection failed: {msg_e}")
+            # ---------------------------
+
             # Truncate result for logging if too long
             str_res = str(result)
             str_res = str_res.encode('ascii', 'replace').decode('ascii')
@@ -54,6 +91,35 @@ def log_async_tool_usage(func):
         try:
             logger.info(f"[Tool] Invoking {func.__name__}")
             result = await func(*args, **kwargs)
+            
+            # --- Auto-Inject Messages (Async Version) ---
+            try:
+                ctx = current_messaging_context.get()
+                if ctx and ctx.get("manager"):
+                    manager = ctx["manager"]
+                    role = ctx["role"]
+                    seen_ids = ctx.setdefault("seen_ids", set())
+                    
+                    all_msgs = manager.get_messages(recipient=role)
+                    new_msgs = [m for m in all_msgs if m['message_id'] not in seen_ids]
+                    
+                    if new_msgs:
+                        msg_notification = "\n\n=== 🔔 NEW MESSAGES RECEIVED ===\n"
+                        for m in new_msgs:
+                            seen_ids.add(m['message_id'])
+                            msg_notification += f"FROM @{m['sender']}: {m['content']}\n"
+                        msg_notification += "================================\n"
+                        
+                        if isinstance(result, str):
+                            result += msg_notification
+                        elif isinstance(result, dict):
+                            result["_system_notification"] = msg_notification.strip()
+                        elif isinstance(result, list):
+                            result.append(msg_notification.strip())
+            except Exception as msg_e:
+                logger.error(f"[Tool] Message injection failed: {msg_e}")
+            # --------------------------------------------
+
             # Sanitize result for logging
             str_res = str(result)
             str_res = str_res.encode('ascii', 'replace').decode('ascii')
@@ -1154,13 +1220,24 @@ def send_message(recipient: str, content: str, message_type: str = "info"):
         content: Message content
         message_type: Type of message ('info', 'request', 'notification', 'dependency')
     """
-    messaging_manager = getattr(send_message, '_messaging_manager', None)
+    # Try ContextVar first, fallback to getattr
+    messaging_manager = None
+    agent_role = 'unknown'
+    
+    ctx = current_messaging_context.get()
+    if ctx:
+        messaging_manager = ctx.get("manager")
+        agent_role = ctx.get("role", "unknown")
+    else:
+        messaging_manager = getattr(send_message, '_messaging_manager', None)
+        agent_role = getattr(send_message, '_agent_role', 'unknown')
+
     if not messaging_manager:
         return "Messaging system not initialized."
     
     try:
         msg_id = messaging_manager.send_message(
-            sender=getattr(send_message, '_agent_role', 'unknown'),
+            sender=agent_role,
             recipient=recipient,
             content=content,
             message_type=message_type
@@ -1181,19 +1258,35 @@ def receive_messages(since_id: str = None):
     Returns:
         List of messages as a formatted string.
     """
-    messaging_manager = getattr(receive_messages, '_messaging_manager', None)
+    # Try ContextVar first, fallback to getattr
+    messaging_manager = None
+    agent_role = 'unknown'
+    seen_ids = set()
+    
+    ctx = current_messaging_context.get()
+    if ctx:
+        messaging_manager = ctx.get("manager")
+        agent_role = ctx.get("role", "unknown")
+        seen_ids = ctx.get("seen_ids", set())
+    else:
+        messaging_manager = getattr(receive_messages, '_messaging_manager', None)
+        agent_role = getattr(receive_messages, '_agent_role', 'unknown')
+
     if not messaging_manager:
         return "Messaging system not initialized."
     
     try:
-        role = getattr(receive_messages, '_agent_role', 'unknown')
-        messages = messaging_manager.get_messages(recipient=role, since_id=since_id)
+        messages = messaging_manager.get_messages(recipient=agent_role, since_id=since_id)
         
         if not messages:
             return "No new messages."
             
         output = []
         for m in messages:
+            # Mark as seen if we are using context
+            if m['message_id'] not in seen_ids:
+                seen_ids.add(m['message_id'])
+            
             output.append(f"[{m['timestamp']}] FROM: {m['sender']} TYPE: {m['message_type']}")
             output.append(f"CONTENT: {m['content']}")
             output.append(f"ID: {m['message_id']}")

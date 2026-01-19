@@ -25,7 +25,8 @@ from sprint_tools import (
     search_memory,
     save_learning,
     send_message,
-    receive_messages
+    receive_messages,
+    current_messaging_context
 )
 from sprint_memory import SprintMemoryBank
 from sprint_guardrails import AgentGuardrails
@@ -286,11 +287,14 @@ async def run_parallel_execution(
                     blocker_reason = task_info.get("blocker_reason")
                     
                     # --- Inject Messaging Context ---
+                    messaging_token = None
                     if messaging_manager:
-                        send_message._messaging_manager = messaging_manager
-                        receive_messages._messaging_manager = messaging_manager
-                        send_message._agent_role = role_raw
-                        receive_messages._agent_role = role_raw
+                        # Set contextvar for this task
+                        messaging_token = current_messaging_context.set({
+                            "manager": messaging_manager,
+                            "role": role_raw,
+                            "seen_ids": set()
+                        })
                     
                     if guardrails:
                         # --- Guardrails Input Validation ---
@@ -603,6 +607,10 @@ async def run_parallel_execution(
                         await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
                 
                 finally:
+                    # Reset messaging context
+                    if 'messaging_token' in locals() and messaging_token:
+                        current_messaging_context.reset(messaging_token)
+                    
                     # Notify the queue that the "unit of work" is complete
                     queue.task_done()
             
@@ -635,7 +643,7 @@ async def run_parallel_execution(
     return len(tasks_to_execute)
 
 # --- Phase 2: QA & Validation ---
-async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, messaging_manager=None):
     log("\n[Phase 2] QA Verification: Validating completed tasks...")
     await update_sprint_header("QA", SprintConfig.get_sprint_dir())
     
@@ -693,23 +701,36 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
 
     @retry_decorator
     async def run_devops_setup():
-        turn_count = 0
-        max_turns = 40  # Reverted: progressive limits handle buffers
-        async for event in devops_runner.run_async(
-            user_id="user", 
-            session_id=devops_pid, 
-            new_message=types.Content(parts=[types.Part(text="Setup environment for QA.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
-                 raise RuntimeError(f"DevOps setup exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[DevOps] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[DevOps] Call: {part.function_call.name}({part.function_call.args})")
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "DevOps",
+                "seen_ids": set()
+            })
+            
+        try:
+            turn_count = 0
+            max_turns = 40  # Reverted: progressive limits handle buffers
+            async for event in devops_runner.run_async(
+                user_id="user", 
+                session_id=devops_pid, 
+                new_message=types.Content(parts=[types.Part(text="Setup environment for QA.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
+                     raise RuntimeError(f"DevOps setup exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[DevOps] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[DevOps] Call: {part.function_call.name}({part.function_call.args})")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_devops_setup()
     log("    [QA Phase] Environment Setup Complete. Starting QA Agent...")
@@ -738,33 +759,46 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     
     @retry_decorator
     async def run_qa():
-        nonlocal defects_created
-        turn_count = 0
-        max_turns = 100  # Increased from 40 to handle complex QA scenarios
-        async for event in runner.run_async(
-            user_id="user", 
-            session_id=qa_pid, 
-            new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 raise RuntimeError(f"QA verification exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[QA] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
-                        if part.function_call.name == "add_sprint_task":
-                            defects_created = True
-                        elif part.function_call.name == "update_sprint_task_status":
-                            # If QA re-opens a task (Todo or Blocked), treat it as a defect/work-item finding
-                            args = part.function_call.args
-                            status = args.get("status", "")
-                            if status in ["[ ]", "[!]"]:
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "QA",
+                "seen_ids": set()
+            })
+        
+        try:
+            nonlocal defects_created
+            turn_count = 0
+            max_turns = 100  # Increased from 40 to handle complex QA scenarios
+            async for event in runner.run_async(
+                user_id="user", 
+                session_id=qa_pid, 
+                new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                     raise RuntimeError(f"QA verification exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[QA] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
+                            if part.function_call.name == "add_sprint_task":
                                 defects_created = True
-                                log(f"    [QA] Task re-opened/blocked ({status}). Will trigger execution loop.")
+                            elif part.function_call.name == "update_sprint_task_status":
+                                # If QA re-opens a task (Todo or Blocked), treat it as a defect/work-item finding
+                                args = part.function_call.args
+                                status = args.get("status", "")
+                                if status in ["[ ]", "[!]"]:
+                                    defects_created = True
+                                    log(f"    [QA] Task re-opened/blocked ({status}). Will trigger execution loop.")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_qa()
     
@@ -776,7 +810,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     return False
 
 # --- Phase 3: Demo ---
-async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None):
+async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None, messaging_manager=None):
     log("\n[Phase 3] Demo & Feedback")
     
     # Load Demo Orchestrator prompt
@@ -809,23 +843,36 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
     
     @retry_decorator
     async def run_demo():
-        turn_count = 0
-        max_turns = 20
-        async for event in runner.run_async(
-            user_id="user", 
-            session_id="demo_session", 
-            new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 raise RuntimeError(f"Demo walkthrough generation exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[Orchestrator] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[Orchestrator] Call: {part.function_call.name}({part.function_call.args})")
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "Orchestrator",
+                "seen_ids": set()
+            })
+        
+        try:
+            turn_count = 0
+            max_turns = 20
+            async for event in runner.run_async(
+                user_id="user", 
+                session_id="demo_session", 
+                new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                     raise RuntimeError(f"Demo walkthrough generation exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[Orchestrator] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[Orchestrator] Call: {part.function_call.name}({part.function_call.args})")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_demo()
     
@@ -978,7 +1025,8 @@ class SprintRunner:
             
             # 2. QA
             defects_found = await run_qa_phase(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory,
+                messaging_manager=self.messaging_manager
             )
             
             if defects_found:
@@ -999,7 +1047,8 @@ class SprintRunner:
         try:
             feedback = await asyncio.wait_for(
                 run_demo_phase(
-                    self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback
+                    self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback,
+                    messaging_manager=self.messaging_manager
                 ),
                 timeout=300
             )
