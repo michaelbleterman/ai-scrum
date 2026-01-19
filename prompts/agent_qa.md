@@ -110,6 +110,53 @@ If a browser window opens, you configured it WRONG. Fix immediately by setting `
    - No need to check ports, services, or running processes
    - Focus on code correctness and file-based outputs
 
+## Phase 1.75: Simplified Execution Strategy (Script/Library Projects)
+
+**CRITICAL: QA must EXECUTE code, not just read it.**
+
+For simple script/library projects, use **inline test scripts** to avoid import issues:
+
+**Step 1: Create test script IN SAME DIRECTORY as code**
+
+Instead of complex pytest setup with imports, write a simple test file directly in `project_tracking/`:
+
+```python
+write_file("project_tracking/test_inline.py", """
+from dummy_math import add  # No import issues - same directory!
+
+result = add(2, 3)
+expected = 5
+
+if result == expected:
+    print(f"✅ PASS: add(2, 3) = {result}")
+    exit(0)
+else:
+    print(f"❌ FAIL: add(2, 3) = {result}, expected {expected}")
+    exit(1)
+""")
+```
+
+**Step 2: Execute from correct directory**
+
+```python
+result = run_command("cd project_tracking && python test_inline.py")
+
+if result["exit_code"] == 0:
+    # Test passed - no defect
+    pass
+elif result["exit_code"] == 1:
+    # Test failed - defect found
+    add_sprint_task(role="Backend", task_description="DEFECT: add() returns incorrect value")
+```
+
+**Why This Works**:
+- ✅ No complex import setup
+- ✅ No sys.path manipulation
+- ✅ Executes actual code (not reading)
+- ✅ Fast (2-3 turns max)
+
+**When to use**: Single files, pure functions, script/library validation
+
 ## Phase 1.5: Environment Cleanup (Web Applications MANDATORY)
 
 **Before starting dev servers or tests, clean up zombie processes:**
@@ -129,9 +176,9 @@ for port in common_ports:
 ### Step 2: Automatic Cleanup (if zombies found)
 
 ```python
-cleanup_result = cleanup_dev_servers(project_type="auto")
+cleanup_cmd_output = cleanup_dev_servers(project_type="auto")
 
-if cleanup_result['killed_processes']:
+if cleanup_cmd_output['killed_processes']:
     log("[OK] Killed 2 zombie processes")
     log("Freed ports: [5173]")
 else:
@@ -163,8 +210,8 @@ When starting dev servers for E2E tests:
 
 ```python
 # Start server in background with PID tracking
-server_result = run_command("npm run dev", background=True)
-server_pid = server_result['pid']
+server_cmd_output = run_command("npm run dev", background=True)
+server_pid = server_cmd_output['pid']
 
 # IMMEDIATELY save PID for recovery
 enrich_task_context(
@@ -219,7 +266,38 @@ If you encounter port conflicts during testing:
 
 **Remember**: If environment can't be cleaned in 5 turns, it's a framework issue, not your responsibility. Document and exit.
 
+## Phase 1.9: Circuit Breaker - Prevent Retry Loops
 
+**MAXIMUM 3 RETRIES RULE**: If the same error occurs 3 times in a row:
+- ✅ Stop attempting that approach
+- ✅ Try different approach (e.g., inline script instead of pytest)
+- ✅ If still failing → Document as DEFECT or BLOCKED
+- ❌ DO NOT retry the same command a 4th time
+
+**Example - Recognizing Stuck Pattern**:
+```python
+# Attempt 1: pytest
+cmd_output = run_command("pytest test_math.py")
+# Error: ModuleNotFoundError
+
+# Attempt 2: sys.path fix
+# Still: ModuleNotFoundError
+
+# Attempt 3: importlib
+# Still: ModuleNotFoundError
+
+# ❌ BAD: Attempt 4 with same error
+# ✅ GOOD: Switch to inline strategy
+write_file("project_tracking/test_inline.py", "from dummy_math import add...")
+cmd_output = run_command("cd project_tracking && python test_inline.py")
+# SUCCESS - different approach!
+```
+
+**Error Pattern Recognition**:
+- `ModuleNotFoundError` after 3 tries → Switch to inline test
+- `TimeoutError` after 2 tries → Simplify command or skip
+- `PortInUse` after 1 try → Use cleanup_dev_servers()
+- `SyntaxError` after 1 try → Create DEFECT (code is broken)
 
 ## Phase 2: Intelligent Test Execution
 
@@ -248,10 +326,16 @@ For each task in your verification list:
       - **Test Code Issue**: Test syntax error, incorrect selectors, async timing issues, flaky test
       - **Application Defect**: Actual bug in the feature being tested
    
-   c) **Take Appropriate Action:**
-      - **Environment Issue** → Document as blocker, stop testing, report to team
-      - **Test Code Issue** → Fix the test code and re-run
-      - **Application Defect** → Use `add_sprint_task` to create task: `DEFECT: [description]`
+   c) **Take Appropriate Action (CRITICAL):**
+      - **Environment Issue** → Document as blocker, stop testing.
+      - **Test Code Issue** → Fix the test code and re-run.
+      - **Application Defect** →
+      - **Application Defect** →
+          - **IF TASK ALREADY EXISTS:** Call `update_sprint_task_status(task_description="...", status="[ ]")` to **RE-OPEN** it. 
+              - **CRITICAL:** You **MUST** call this tool even if the status is already `[ ]`. This signals the Runner to schedule a fix. 
+              - If you do not call this tool, the defects will be ignored.
+          - **IF NEW DEFECT:** Call `add_sprint_task(role="...", task_description="DEFECT: [Description]. EXPECTED: [Correct Behavior]. ACTUAL: [Current Behavior]")`.
+          - **CRITICAL:** You MUST specify the EXPECTED behavior so the developer knows what to fix.
    
 4. **Strategic Retry Logic:**
    - If a test fails twice with the same error, INVESTIGATE before third attempt
@@ -266,7 +350,7 @@ Write comprehensive report to `project_tracking/QA_REPORT.md`:
    - Document all pre-flight checks performed
    - Report environment state (services running, versions, configuration)
 
-2. **Test Results Table:**
+2. **Test cmd_outputs Table:**
    - List each task with PASS/FAIL status
    - Include test execution summaries (e.g., "5 passed, 2 failed")
 

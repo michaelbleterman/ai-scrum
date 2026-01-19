@@ -19,13 +19,71 @@ from sprint_tools import (
     pm_tools,
     record_turn_usage, 
     update_sprint_task_status, 
-    update_sprint_header
+    update_sprint_task_status, 
+    update_sprint_header,
+    search_memory,
+    search_memory,
+    save_learning,
+    send_message,
+    receive_messages,
+    current_messaging_context
 )
+from sprint_memory import SprintMemoryBank
+from sprint_guardrails import AgentGuardrails
+from sprint_profile import ProfileManager
+from sprint_messaging import MessagingManager
 from sprint_utils import detect_latest_sprint_file, parse_sprint_tasks, get_all_sprint_tasks, analyze_sprint_status
 from sprint_metadata import parse_task_metadata
 
 import logging
 from logging.handlers import RotatingFileHandler
+
+# --- Prompt Sanitization ---
+def sanitize_prompt_for_adk(prompt_text):
+    """
+    Sanitize prompt text to prevent ADK template variable substitution errors.
+    
+    The ADK processes entire instruction strings and tries to substitute {variable_name} 
+    patterns using str.isidentifier(). This function injects a Zero Width Space (\u200b)
+    into curly-brace patterns within code blocks to make them invalid identifiers,
+    causing the ADK to ignore them while remainining invisible to the LLM.
+    
+    Args:
+        prompt_text: Raw prompt text loaded from markdown files
+        
+    Returns:
+        Sanitized prompt text with "poisoned" identifiers in code blocks
+    """
+    if not prompt_text:
+        return prompt_text
+    
+    # Pattern to match code blocks (triple backticks)
+    code_block_pattern = r'```[\s\S]*?```'
+    
+    def poison_identifiers(match):
+        """Inject zero-width space into {identifier} patterns"""
+        content = match.group(0)
+        # Find anything that looks like {var} or {var.attr} or {var[key]}
+        # and inject \u200b after the first character of the potential identifier
+        def replacer(m):
+            braces = m.group(1) # { or {{ or {{{
+            identifier = m.group(2) # the actual name
+            rest = m.group(3) # } or }} or }}}
+            if identifier and identifier[0].isalpha():
+                return f"{braces}{identifier[0]}\u200b{identifier[1:]}{rest}"
+            return m.group(0)
+
+        # Regex to find {identifier} patterns
+        # Group 1: Opening braces
+        # Group 2: Potential identifier start (alpha + alnum/dot/underscore/bracket)
+        # Group 3: Closing braces
+        sanitized_content = re.sub(r'(\{+)([a-zA-Z][a-zA-Z0-9_\.\[\]\"\'\-]*)(\}+)', replacer, content)
+        return sanitized_content
+    
+    # Apply poisoning only to code blocks
+    sanitized = re.sub(code_block_pattern, poison_identifiers, prompt_text)
+    
+    return sanitized
 
 # --- Logging Setup ---
 def setup_logging(project_root=None):
@@ -158,7 +216,16 @@ def default_agent_factory(name, instruction, tools, model=None, agent_role=None)
     return LlmAgent(name=name, instruction=instruction, tools=tools, model=model)
 
 # --- Phase 1: Parallel Execution ---
-async def run_parallel_execution(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+async def run_parallel_execution(
+    session_service, 
+    framework_instruction, 
+    sprint_file, 
+    agent_factory=default_agent_factory, 
+    memory_bank=None, 
+    guardrails=None, 
+    profile_manager=None,
+    messaging_manager=None
+):
     log("\n[Phase 1] Parallel Execution: Analyzing sprint status...")
     await update_sprint_header("In Progress", SprintConfig.get_sprint_dir())
     
@@ -219,6 +286,44 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     status = task_info["status"]
                     blocker_reason = task_info.get("blocker_reason")
                     
+                    # --- Inject Messaging Context ---
+                    messaging_token = None
+                    if messaging_manager:
+                        # Set contextvar for this task
+                        messaging_token = current_messaging_context.set({
+                            "manager": messaging_manager,
+                            "role": role_raw,
+                            "seen_ids": set()
+                        })
+                    
+                    if guardrails:
+                        # --- Guardrails Input Validation ---
+                        is_valid, violations = guardrails.validate_input(desc)
+                        if not is_valid:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] BLOCKED by guardrails:")
+                            for v in violations:
+                                log(f"      - {v.reason}")
+                            
+                            await update_sprint_task_status(
+                                desc, "[!]",
+                                blocker_reason=f"Guardrail violation: {violations[0].reason}",
+                                sprint_dir=SprintConfig.get_sprint_dir()
+                            )
+                            queue.task_done()
+                            continue
+
+                        # --- Circuit Breaker Check ---
+                        allowed, circuit_reason = guardrails.check_circuit(desc)
+                        if not allowed:
+                            log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Circuit breaker OPEN: {circuit_reason}")
+                            await update_sprint_task_status(
+                                desc, "[!]",
+                                blocker_reason=circuit_reason,
+                                sprint_dir=SprintConfig.get_sprint_dir()
+                            )
+                            queue.task_done()
+                            continue
+                    
                     # Check retry limit for blocked tasks
                     if status == "blocked":
                         retry_count = task_retry_tracker.get(desc, 0)
@@ -243,11 +348,12 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                     prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, prompt_file)
                     if os.path.exists(prompt_path):
                         with open(prompt_path, "r", encoding="utf-8") as f:
-                            instruction = f.read()
+                            instruction = sanitize_prompt_for_adk(f.read())
                     else:
                         instruction = f"Act as {role}."
 
                     agent_name = f"{re.sub(r'[^a-zA-Z0-9_]', '', role)}_{task_index}"
+                    
                     
                     # Discover and inject project context (cached per execution)
                     if not hasattr(run_parallel_execution, '_project_context_cache'):
@@ -270,7 +376,51 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         f"========================\n"
                     )
                     
-                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{project_context_instruction}\n\nTask: {desc}"
+                    # --- Profiling: Load and Inject Profile ---
+                    profile_context = ""
+                    if profile_manager:
+                         profile = profile_manager.get_profile(name=role_raw, role=role_raw)
+                         profile_context = f"\n\n=== AGENT PROFILE ===\n"
+                         profile_context += f"Identity: {profile.name} (Level {profile.level} {profile.role})\n"
+                         profile_context += f"XP: {profile.total_xp} | Success Rate: {profile.stats.get('success_rate', 0)}%\n"
+                         if profile.skills:
+                             profile_context += f"Skills: {', '.join(profile.skills)}\n"
+
+                    # --- Memory Recall ---
+                    memory_context = ""
+                    if memory_bank and memory_bank.enable_memory:
+                        try:
+                            relevant_memories = memory_bank.recall(query=desc, top_k=3)
+                            if relevant_memories:
+                                log(f"    [Task {task_index+1}] Found {len(relevant_memories)} relevant memories")
+                                memory_context = "\n\n=== RELEVANT PAST EXPERIENCES (MEMORY BANK) ===\n"
+                                memory_context += "Use these insights to guide your implementation and avoid past errors:\n"
+                                for i, mem in enumerate(relevant_memories, 1):
+                                    relevance = 1 - mem.get('distance', 1.0)
+                                    mem_type = mem.get('metadata', {}).get('memory_type', 'unknown')
+                                    memory_context += f"{i}. [{relevance:.0%} relevant] ({mem_type}) {mem['content']}\n"
+                                memory_context += "===============================================\n"
+                        except Exception as mem_err:
+                            log(f"    [Memory Recall] Failed: {mem_err}")
+                    
+                    # --- Messaging Injection ---
+                    messaging_context = ""
+                    if messaging_manager:
+                        pending_messages = messaging_manager.get_messages(recipient=role_raw)
+                        # Filter for unread or relevant context if needed, for now we show all 'pending' 
+                        # In a real system we might track 'read' state per agent-task session.
+                        # For now, we show strictly all messages for them.
+                        if pending_messages:
+                            log(f"    [Task {task_index+1}] Injecting {len(pending_messages)} pending messages for @{role_raw}")
+                            messaging_context = "\n\n=== ✉️ PENDING MESSAGES ===\n"
+                            messaging_context += "You have unread messages. Review and acknowledge them immediately:\n"
+                            for msg in pending_messages:
+                                msg_type = msg.get('message_type', 'info').upper()
+                                is_broadcast = " (BROADCAST)" if msg.get('recipient') == 'all' else ""
+                                messaging_context += f"- [{msg['timestamp']}] FROM @{msg['sender']} [{msg_type}]{is_broadcast}: {msg['content']}\n"
+                            messaging_context += "===========================\n"
+
+                    full_instruction = f"{framework_instruction}\n\n{instruction}\n{profile_context}\n{project_context_instruction}\n{memory_context}\n{messaging_context}\n\nTask: {desc}"
                     
                     # Add status-specific instructions
                     if status == "in_progress":
@@ -387,11 +537,65 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         # Record actual usage
                         record_turn_usage(desc, actual_turns)
                         
+                        # Record success for circuit breaker
+                        if guardrails:
+                            guardrails.record_action(desc, success=True)
+                            
+                        # Update Profile (XP)
+                        if profile_manager:
+                            points = 10 # Default base XP
+                            if "POINTS:" in desc:
+                                try:
+                                    points = int(desc.split("POINTS:")[1].split("|")[0].split("]")[0]) * 10
+                                except:
+                                    pass
+                            profile_manager.update_profile(role_raw, xp_gain=points, success=True, turns=actual_turns)
+                        
                         # DIRECT UPDATE: Mark done
                         await update_sprint_task_status(desc, "[x]", SprintConfig.get_sprint_dir())
+                        
+                        # Store success in memory
+                        if memory_bank and memory_bank.enable_memory:
+                            try:
+                                memory_bank.store(
+                                    content=f"Task '{desc}' completed successfully by {role_raw}",
+                                    memory_type="task_outcome",
+                                    metadata={
+                                        "role": role_raw,
+                                        "turns": actual_turns,
+                                        "status": "success",
+                                        "sprint_file": sprint_file
+                                    }
+                                )
+                            except Exception as mem_e:
+                                log(f"    [Memory Store] Failed to store success: {mem_e}")
 
                     except Exception as e:
                         log(f"    [Task {task_index+1}] FAILED @{role_raw}: {e}")
+                        
+                        # Record failure for circuit breaker
+                        if guardrails:
+                            guardrails.record_action(desc, success=False)
+                            
+                        # Update Profile (Failure)
+                        if profile_manager:
+                            profile_manager.update_profile(role_raw, xp_gain=1, success=False, turns=actual_turns)
+                        
+                        # Store failure in memory
+                        if memory_bank and memory_bank.enable_memory:
+                            try:
+                                memory_bank.store(
+                                    content=f"Task '{desc}' failed: {str(e)}",
+                                    memory_type="error_resolution",
+                                    metadata={
+                                        "role": role_raw,
+                                        "error": str(e),
+                                        "status": "failed",
+                                        "sprint_file": sprint_file
+                                    }
+                                )
+                            except Exception as mem_e:
+                                log(f"    [Memory Store] Failed to store error: {mem_e}")
                         # Record partial usage (best effort)
                         # Note: We can't easily get partial turn count here as it's local to run_agent
                         # Unless run_agent returns it in exception or we track it externally.
@@ -403,6 +607,10 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
                         await update_sprint_task_status(desc, "[!]", SprintConfig.get_sprint_dir())
                 
                 finally:
+                    # Reset messaging context
+                    if 'messaging_token' in locals() and messaging_token:
+                        current_messaging_context.reset(messaging_token)
+                    
                     # Notify the queue that the "unit of work" is complete
                     queue.task_done()
             
@@ -435,7 +643,7 @@ async def run_parallel_execution(session_service, framework_instruction, sprint_
     return len(tasks_to_execute)
 
 # --- Phase 2: QA & Validation ---
-async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory):
+async def run_qa_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, messaging_manager=None):
     log("\n[Phase 2] QA Verification: Validating completed tasks...")
     await update_sprint_header("QA", SprintConfig.get_sprint_dir())
     
@@ -452,7 +660,7 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     qa_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_qa.md")
     if os.path.exists(qa_prompt_path):
         with open(qa_prompt_path, "r", encoding="utf-8") as f:
-             qa_instruction = f.read()
+             qa_instruction = sanitize_prompt_for_adk(f.read())
     else:
         qa_instruction = "You are the QA Engineer."
 
@@ -463,10 +671,10 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     )
 
     # Load DevOps QA Setup prompt
-    devops_qa_setup_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops_qa_setup.md")
+    devops_qa_setup_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_devops.md")  # Consolidated QA setup in main DevOps prompt
     if os.path.exists(devops_qa_setup_prompt_path):
         with open(devops_qa_setup_prompt_path, "r", encoding="utf-8") as f:
-            devops_setup_instruction = f.read()
+            devops_setup_instruction = sanitize_prompt_for_adk(f.read())
     else:
         devops_setup_instruction = "Prepare the test environment for QA execution."
 
@@ -493,23 +701,36 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
 
     @retry_decorator
     async def run_devops_setup():
-        turn_count = 0
-        max_turns = 40  # Reverted: progressive limits handle buffers
-        async for event in devops_runner.run_async(
-            user_id="user", 
-            session_id=devops_pid, 
-            new_message=types.Content(parts=[types.Part(text="Setup environment for QA.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
-                 raise RuntimeError(f"DevOps setup exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[DevOps] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[DevOps] Call: {part.function_call.name}({part.function_call.args})")
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "DevOps",
+                "seen_ids": set()
+            })
+            
+        try:
+            turn_count = 0
+            max_turns = 40  # Reverted: progressive limits handle buffers
+            async for event in devops_runner.run_async(
+                user_id="user", 
+                session_id=devops_pid, 
+                new_message=types.Content(parts=[types.Part(text="Setup environment for QA.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[DevOps] EXCEEDED MAX TURNS ({max_turns}). Stopping setup.")
+                     raise RuntimeError(f"DevOps setup exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[DevOps] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[DevOps] Call: {part.function_call.name}({part.function_call.args})")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_devops_setup()
     log("    [QA Phase] Environment Setup Complete. Starting QA Agent...")
@@ -538,45 +759,65 @@ async def run_qa_phase(session_service, framework_instruction, sprint_file, agen
     
     @retry_decorator
     async def run_qa():
-        nonlocal defects_created
-        turn_count = 0
-        max_turns = 40
-        async for event in runner.run_async(
-            user_id="user", 
-            session_id=qa_pid, 
-            new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 raise RuntimeError(f"QA verification exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[QA] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
-                        if part.function_call.name == "add_sprint_task":
-                            defects_created = True
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "QA",
+                "seen_ids": set()
+            })
+        
+        try:
+            nonlocal defects_created
+            turn_count = 0
+            max_turns = 100  # Increased from 40 to handle complex QA scenarios
+            async for event in runner.run_async(
+                user_id="user", 
+                session_id=qa_pid, 
+                new_message=types.Content(parts=[types.Part(text="Begin QA verification.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[QA] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                     raise RuntimeError(f"QA verification exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[QA] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[QA] Call: {part.function_call.name}({part.function_call.args})")
+                            if part.function_call.name == "add_sprint_task":
+                                defects_created = True
+                            elif part.function_call.name == "update_sprint_task_status":
+                                # If QA re-opens a task (Todo or Blocked), treat it as a defect/work-item finding
+                                args = part.function_call.args
+                                status = args.get("status", "")
+                                if status in ["[ ]", "[!]"]:
+                                    defects_created = True
+                                    log(f"    [QA] Task re-opened/blocked ({status}). Will trigger execution loop.")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_qa()
     
     if defects_created:
-        log("    [QA] Defects were found and added to the sprint.")
+        log("    [QA] Defects were found (New or Re-opened). Rerunning execution phase...")
         return True
     
     log("    [QA] Verification complete. No new defects reported.")
     return False
 
 # --- Phase 3: Demo ---
-async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None):
+async def run_demo_phase(session_service, framework_instruction, sprint_file, agent_factory=default_agent_factory, input_callback=None, messaging_manager=None):
     log("\n[Phase 3] Demo & Feedback")
     
     # Load Demo Orchestrator prompt
     demo_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_orchestrator_demo.md")
     if os.path.exists(demo_prompt_path):
         with open(demo_prompt_path, "r", encoding="utf-8") as f:
-            demo_instruction = f.read()
+            demo_instruction = sanitize_prompt_for_adk(f.read())
     else:
         demo_instruction = "Prepare a Demo Walkthrough."
 
@@ -602,23 +843,36 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
     
     @retry_decorator
     async def run_demo():
-        turn_count = 0
-        max_turns = 20
-        async for event in runner.run_async(
-            user_id="user", 
-            session_id="demo_session", 
-            new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
-        ):
-            turn_count += 1
-            if turn_count > max_turns:
-                 log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
-                 raise RuntimeError(f"Demo walkthrough generation exceeded max turns ({max_turns})")
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        logger.info(f"[Orchestrator] Thought: {part.text}")
-                    if getattr(part, 'function_call', None):
-                        logger.info(f"[Orchestrator] Call: {part.function_call.name}({part.function_call.args})")
+        # Set messaging context
+        token = None
+        if messaging_manager:
+            token = current_messaging_context.set({
+                "manager": messaging_manager,
+                "role": "Orchestrator",
+                "seen_ids": set()
+            })
+        
+        try:
+            turn_count = 0
+            max_turns = 20
+            async for event in runner.run_async(
+                user_id="user", 
+                session_id="demo_session", 
+                new_message=types.Content(parts=[types.Part(text="Create the demo walkthrough.")])
+            ):
+                turn_count += 1
+                if turn_count > max_turns:
+                     log(f"[Orchestrator] EXCEEDED MAX TURNS ({max_turns}). Stopping.")
+                     raise RuntimeError(f"Demo walkthrough generation exceeded max turns ({max_turns})")
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            logger.info(f"[Orchestrator] Thought: {part.text}")
+                        if getattr(part, 'function_call', None):
+                            logger.info(f"[Orchestrator] Call: {part.function_call.name}({part.function_call.args})")
+        finally:
+            if token:
+                current_messaging_context.reset(token)
 
     await run_demo()
     
@@ -654,7 +908,7 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
     retro_prompt_path = os.path.join(SprintConfig.PROMPT_BASE_DIR, "agent_pm_retrospective.md")
     if os.path.exists(retro_prompt_path):
         with open(retro_prompt_path, "r", encoding="utf-8") as f:
-            pm_retro_instruction = f.read()
+            pm_retro_instruction = sanitize_prompt_for_adk(f.read())
             # Inject user feedback into the template
             user_feedback_text = demo_feedback if demo_feedback else "None provided."
             pm_retro_instruction = pm_retro_instruction.replace("{user_feedback}", user_feedback_text)
@@ -700,10 +954,23 @@ async def run_retro_phase(session_service, framework_instruction, sprint_file, d
 
 # --- Lifecycle Runner ---
 class SprintRunner:
-    def __init__(self, agent_factory=default_agent_factory, input_callback=None):
+    def __init__(self, agent_factory=default_agent_factory, input_callback=None, memory_bank=None, messaging_manager=None):
         self.agent_factory = agent_factory
         self.input_callback = input_callback
         self.session_service = InMemorySessionService()
+        self.memory_bank = memory_bank
+        self.messaging_manager = messaging_manager
+        
+        # Initialize guardrails
+        self.guardrails = AgentGuardrails(
+            denied_topics=['password', 'api_key', 'secret', 'token'],
+            enable_pii_detection=True, # os.getenv("ENABLE_GUARDRAILS", "true") == "true"
+            enable_content_filter=True,
+            enable_circuit_breaker=True
+        )
+        
+        # Initialize Profiling
+        self.profile_manager = ProfileManager(SprintConfig.get_sprint_dir())
 
     async def run_cycle(self):
         SprintConfig.validate()
@@ -734,7 +1001,7 @@ class SprintRunner:
         framework_instruction = ""
         if os.path.exists(framework_index_path):
             with open(framework_index_path, "r", encoding="utf-8") as f:
-                framework_instruction = f.read()
+                framework_instruction = sanitize_prompt_for_adk(f.read())
 
         # == Execution Loop (Exec -> QA -> Defect -> Exec) ==
         loop_count = 0
@@ -746,12 +1013,20 @@ class SprintRunner:
             
             # 1. Execute Pending
             tasks_run = await run_parallel_execution(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+                self.session_service, 
+                framework_instruction, 
+                latest_sprint, 
+                self.agent_factory, 
+                memory_bank=self.memory_bank, 
+                guardrails=self.guardrails, 
+                profile_manager=self.profile_manager,
+                messaging_manager=self.messaging_manager
             )
             
             # 2. QA
             defects_found = await run_qa_phase(
-                self.session_service, framework_instruction, latest_sprint, self.agent_factory
+                self.session_service, framework_instruction, latest_sprint, self.agent_factory,
+                messaging_manager=self.messaging_manager
             )
             
             if defects_found:
@@ -769,14 +1044,36 @@ class SprintRunner:
             log("WARNING: Max sprint cycles reached. Proceeding to Retro despite potential issues.")
 
         # 3. Demo
-        feedback = await run_demo_phase(
-            self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback
-        )
+        try:
+            feedback = await asyncio.wait_for(
+                run_demo_phase(
+                    self.session_service, framework_instruction, latest_sprint, self.agent_factory, self.input_callback,
+                    messaging_manager=self.messaging_manager
+                ),
+                timeout=300
+            )
+        except asyncio.TimeoutError:
+            log("WARNING: Demo phase timed out (300s). Proceeding to Retro.")
+            feedback = "Demo phase timed out."
+        except Exception as e:
+            log(f"WARNING: Demo phase failed: {e}")
+            feedback = "Demo phase failed."
         
         # 4. Retro
-        await run_retro_phase(
-            self.session_service, framework_instruction, latest_sprint, feedback, self.agent_factory
-        )
+        try:
+            await asyncio.wait_for(
+                run_retro_phase(
+                    self.session_service, framework_instruction, latest_sprint, feedback, self.agent_factory
+                ),
+                timeout=300
+            )
+        except asyncio.TimeoutError:
+             log("WARNING: Retro phase timed out (300s). Finishing.")
+        except Exception as e:
+             log(f"WARNING: Retro phase failed: {e}")
+        
+        # Explicit cleanup of any sessions if possible
+        # (SessionService internal details dependent)
         
         log("\n[*] Mission execution complete.")
 
@@ -796,7 +1093,23 @@ async def main(project_root=None):
     log(f"Project root: {SprintConfig.PROJECT_ROOT}")
     log(f"Sprint directory: {SprintConfig.get_sprint_dir()}")
     
-    runner = SprintRunner()
+    # Initialize memory bank
+    enable_memory = os.getenv("ENABLE_MEMORY", "true").lower() == "true"
+    memory_bank = SprintMemoryBank(SprintConfig.PROJECT_ROOT, enable_memory=enable_memory)
+    log(f"Memory Bank: {memory_bank.get_statistics()}")
+    
+    # Initialize messaging manager
+    messaging_manager = MessagingManager(SprintConfig.PROJECT_ROOT)
+    
+    # Inject memory bank into tools
+    search_memory._memory_bank = memory_bank
+    save_learning._memory_bank = memory_bank
+    
+    # Inject messaging manager into tools
+    send_message._messaging_manager = messaging_manager
+    receive_messages._messaging_manager = messaging_manager
+    
+    runner = SprintRunner(memory_bank=memory_bank, messaging_manager=messaging_manager)
     try:
         await runner.run_cycle()
     except asyncio.CancelledError:

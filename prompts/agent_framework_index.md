@@ -42,6 +42,12 @@ This directory contains the precise system prompts to activate the "Scrum Team" 
 *   **Inline Definition of Done (DoD):** Every technical task you generate MUST include an inline checklist (e.g., `- [ ] Unit tests pass`, `- [ ] Linting clean`).
 *   **PM Sign-off:** A story is only "Done" after PM formally validates acceptance criteria (`PM Sign-off: ✅`).
 
+### ✉️ Messaging & Collaboration Protocol
+*   **CHECK MESSAGES:** You **MUST** check `receive_messages(recipient='my_role')` at the start of every task.
+*   **ACKNOWLEDGE:** Explicitly acknowledge any pending messages in your reasoning (e.g., "Received message from @Orchestrator...").
+*   **EVALUATE:** If a message contains a request, evaluate if it requires new work. If so, use `add_sprint_task` or `update_sprint_task_status` immediately.
+*   **REPLY:** Use `send_message` to reply or notify other agents of updates.
+
 ### 🗣️ Communication & Interfaces
 *   **VERBOSE LOGGING**: You must explain your reasoning step-by-step before every tool call. This is critical for debugging.
 *   **Persona Switching:** Respect the hat you are currently wearing. If @FE is called, adopt the Front-End persona.
@@ -194,7 +200,7 @@ The Orchestrator gathers the results of all parallel branches once they transiti
 
 ## ⚖️ Turn Budget Protocol
 
-**MANDATORY:** Before starting any turn-intensive task (coding, testing, large research), you must request a turn budget.
+**CRITICAL MANDATORY STEP:** Before starting *ANY* task (even simple ones), you **MUST** request a turn budget.
 
 1. **Calculate Needs:** Estimate the complexity of the task.
    - Simple (e.g., config change): 20 turns
@@ -203,7 +209,8 @@ The Orchestrator gathers the results of all parallel branches once they transiti
    - Story/Epic: 100 turns
 
 2. **Request Budget:** Call `request_turn_budget(task_description="...", estimated_turns=N, justification="...")`.
-   - **Do this in your very first turn** after picking up the task.
+   - **EXECUTE THIS AS YOUR VERY FIRST ACTION.**
+   - Do not perform any other tools before this.
    - The runner will approve and dynamically update your limit.
 
 3. **Monitor Usage:** Work efficiently. If you are running out of turns, simplify your approach or mark as BLOCKED.

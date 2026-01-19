@@ -8,10 +8,10 @@ class SprintConfig:
     """Configuration for the Sprint Runner."""
     
     # Google Cloud Settings
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     
     # Agent Settings
-    MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
+    MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
     CONCURRENCY_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", "3"))
     
     # Paths
@@ -69,17 +69,17 @@ class SprintConfig:
         # Model mapping based on agent complexity and requirements
         model_mapping = {
             # High complexity - need advanced reasoning
-            "orchestrator": os.getenv("MODEL_ORCHESTRATOR", "gemini-2.5-pro"),
-            "qa_engineer": os.getenv("MODEL_QA", "gemini-2.5-pro"),
-            "qa": os.getenv("MODEL_QA", "gemini-2.5-pro"),
+            "orchestrator": os.getenv("MODEL_ORCHESTRATOR", "gemini-2.0-flash"),
+            "qa_engineer": os.getenv("MODEL_QA", "gemini-2.0-flash"),
+            "qa": os.getenv("MODEL_QA", "gemini-2.0-flash"),
             
             # Medium-high complexity - balanced performance
-            "backend": os.getenv("MODEL_BACKEND", "gemini-2.5-flash"),
-            "frontend": os.getenv("MODEL_FRONTEND", "gemini-2.5-flash"),
-            "devops": os.getenv("MODEL_DEVOPS", "gemini-2.5-flash"),
-            "security": os.getenv("MODEL_SECURITY", "gemini-2.5-flash"),
-            "productmanager": os.getenv("MODEL_PM", "gemini-2.5-flash"),
-            "pm": os.getenv("MODEL_PM", "gemini-2.5-flash"),
+            "backend": os.getenv("MODEL_BACKEND", "gemini-2.0-flash"),
+            "frontend": os.getenv("MODEL_FRONTEND", "gemini-2.0-flash"),
+            "devops": os.getenv("MODEL_DEVOPS", "gemini-2.0-flash"),
+            "security": os.getenv("MODEL_SECURITY", "gemini-2.0-flash"),
+            "productmanager": os.getenv("MODEL_PM", "gemini-2.0-flash"),
+            "pm": os.getenv("MODEL_PM", "gemini-2.0-flash"),
         }
         
         # Normalize agent name: lowercase, remove spaces and underscores

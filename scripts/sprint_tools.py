@@ -5,9 +5,30 @@ import logging
 import functools
 from google.adk.tools import FunctionTool
 from sprint_utils import detect_latest_sprint_file
+import contextvars
+
+# Global Context for Messaging (manager, role, seen_ids)
+current_messaging_context = contextvars.ContextVar("messaging_context", default=None)
 
 # Global registry for background processes
 _background_processes = {}
+
+import atexit
+
+def terminate_all_background_processes():
+    """Cleanup all background processes initiated by run_command"""
+    if not _background_processes:
+        return
+        
+    logger = logging.getLogger("SprintRunner")
+    logger.info(f"[Cleanup] Terminating {len(_background_processes)} background processes...")
+    
+    pids = list(_background_processes.keys())
+    for pid in pids:
+        kill_process(pid)
+
+atexit.register(terminate_all_background_processes)
+
 
 # --- Tool Logging Decorator ---
 def log_tool_usage(func):
@@ -17,6 +38,39 @@ def log_tool_usage(func):
         try:
             logger.info(f"[Tool] Invoking {func.__name__}")
             result = func(*args, **kwargs)
+            
+            # --- Auto-Inject Messages ---
+            try:
+                ctx = current_messaging_context.get()
+                if ctx and ctx.get("manager"):
+                    manager = ctx["manager"]
+                    role = ctx["role"]
+                    seen_ids = ctx.setdefault("seen_ids", set())
+                    
+                    # Check for new messages
+                    # We only check 'info' or 'priority' messages to avoid noise? 
+                    # For now get all and filter duplicates.
+                    all_msgs = manager.get_messages(recipient=role)
+                    new_msgs = [m for m in all_msgs if m['message_id'] not in seen_ids]
+                    
+                    if new_msgs:
+                        msg_notification = "\n\n=== 🔔 NEW MESSAGES RECEIVED ===\n"
+                        for m in new_msgs:
+                            seen_ids.add(m['message_id'])
+                            msg_notification += f"FROM @{m['sender']}: {m['content']}\n"
+                        msg_notification += "================================\n"
+                        
+                        # Append to result if result is string
+                        if isinstance(result, str):
+                            result += msg_notification
+                        elif isinstance(result, dict):
+                            result["_system_notification"] = msg_notification.strip()
+                        elif isinstance(result, list):
+                            result.append(msg_notification.strip())
+            except Exception as msg_e:
+                logger.error(f"[Tool] Message injection failed: {msg_e}")
+            # ---------------------------
+
             # Truncate result for logging if too long
             str_res = str(result)
             str_res = str_res.encode('ascii', 'replace').decode('ascii')
@@ -37,6 +91,35 @@ def log_async_tool_usage(func):
         try:
             logger.info(f"[Tool] Invoking {func.__name__}")
             result = await func(*args, **kwargs)
+            
+            # --- Auto-Inject Messages (Async Version) ---
+            try:
+                ctx = current_messaging_context.get()
+                if ctx and ctx.get("manager"):
+                    manager = ctx["manager"]
+                    role = ctx["role"]
+                    seen_ids = ctx.setdefault("seen_ids", set())
+                    
+                    all_msgs = manager.get_messages(recipient=role)
+                    new_msgs = [m for m in all_msgs if m['message_id'] not in seen_ids]
+                    
+                    if new_msgs:
+                        msg_notification = "\n\n=== 🔔 NEW MESSAGES RECEIVED ===\n"
+                        for m in new_msgs:
+                            seen_ids.add(m['message_id'])
+                            msg_notification += f"FROM @{m['sender']}: {m['content']}\n"
+                        msg_notification += "================================\n"
+                        
+                        if isinstance(result, str):
+                            result += msg_notification
+                        elif isinstance(result, dict):
+                            result["_system_notification"] = msg_notification.strip()
+                        elif isinstance(result, list):
+                            result.append(msg_notification.strip())
+            except Exception as msg_e:
+                logger.error(f"[Tool] Message injection failed: {msg_e}")
+            # --------------------------------------------
+
             # Sanitize result for logging
             str_res = str(result)
             str_res = str_res.encode('ascii', 'replace').decode('ascii')
@@ -1049,7 +1132,172 @@ def analyze_turn_metrics(sprint_file: str = None) -> dict:
     return stats
 
 
-# Tool Definitions for Agent Consumption
+# --- Memory Management Tools ---
+
+@log_tool_usage
+def search_memory(query: str, memory_type: str = None, top_k: int = 3):
+    """
+    Search long-term memory for relevant past experiences.
+    
+    Args:
+        query: What to search for (e.g., "port conflict errors")
+        memory_type: Filter by type ('task_outcome', 'error_resolution', 'pattern', 'decision')
+        top_k: Number of results to return (default: 3)
+    
+    Returns:
+        List of relevant memories with similarity scores
+    """
+    # Get memory bank from global context (set by runner)
+    memory_bank = getattr(search_memory, '_memory_bank', None)
+    
+    # Graceful fallback if memory not enabled or not initialized
+    if not memory_bank:
+        return "Memory system not initialized."
+    
+    if not memory_bank.enable_memory:
+        return "Memory system disabled."
+    
+    try:
+        results = memory_bank.recall(query=query, memory_type=memory_type, top_k=top_k)
+        
+        if not results:
+            return f"No memories found for: {query}"
+        
+        output = []
+        for i, mem in enumerate(results, 1):
+            relevance = 1 - mem.get('distance', 1.0)
+            mem_type = mem.get('metadata', {}).get('memory_type', 'unknown')
+            output.append(f"{i}. [{relevance:.0%} relevant] ({mem_type}) {mem['content']}")
+        
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error searching memory: {e}"
+
+
+@log_tool_usage
+def save_learning(content: str, memory_type: str, metadata_json: str = "{}"):
+    """
+    Save a new learning or insight to long-term memory.
+    
+    Args:
+        content: What you learned (clear, concise description)
+        memory_type: Type of learning ('pattern', 'decision', 'error_resolution')
+        metadata_json: Additional structured data as JSON string (default: "{}")
+    """
+    import json
+    memory_bank = getattr(save_learning, '_memory_bank', None)
+    
+    if not memory_bank:
+        return "Memory system not initialized."
+    
+    if not memory_bank.enable_memory:
+        return "Memory system disabled."
+    
+    try:
+        try:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+        except json.JSONDecodeError:
+            return f"Error: metadata_json must be valid JSON string. Got: {metadata_json}"
+            
+        memory_id = memory_bank.store(
+            content=content,
+            memory_type=memory_type,
+            metadata=metadata
+        )
+        
+        return f"Saved learning to memory: {memory_id}"
+    except Exception as e:
+        return f"Error saving learning: {e}"
+
+
+@log_tool_usage
+def send_message(recipient: str, content: str, message_type: str = "info"):
+    """
+    Send a message to another agent or broadcast to 'all'.
+    
+    Args:
+        recipient: Role of the agent (e.g., 'Backend', 'QA', 'Product_Management') or 'all'
+        content: Message content
+        message_type: Type of message ('info', 'request', 'notification', 'dependency')
+    """
+    # Try ContextVar first, fallback to getattr
+    messaging_manager = None
+    agent_role = 'unknown'
+    
+    ctx = current_messaging_context.get()
+    if ctx:
+        messaging_manager = ctx.get("manager")
+        agent_role = ctx.get("role", "unknown")
+    else:
+        messaging_manager = getattr(send_message, '_messaging_manager', None)
+        agent_role = getattr(send_message, '_agent_role', 'unknown')
+
+    if not messaging_manager:
+        return "Messaging system not initialized."
+    
+    try:
+        msg_id = messaging_manager.send_message(
+            sender=agent_role,
+            recipient=recipient,
+            content=content,
+            message_type=message_type
+        )
+        return f"Message sent successfully (ID: {msg_id})"
+    except Exception as e:
+        return f"Error sending message: {e}"
+
+
+@log_tool_usage
+def receive_messages(since_id: str = None):
+    """
+    Check for new messages addressed to this agent or 'all'.
+    
+    Args:
+        since_id: Optional ID of the last message received to get only newer ones.
+    
+    Returns:
+        List of messages as a formatted string.
+    """
+    # Try ContextVar first, fallback to getattr
+    messaging_manager = None
+    agent_role = 'unknown'
+    seen_ids = set()
+    
+    ctx = current_messaging_context.get()
+    if ctx:
+        messaging_manager = ctx.get("manager")
+        agent_role = ctx.get("role", "unknown")
+        seen_ids = ctx.get("seen_ids", set())
+    else:
+        messaging_manager = getattr(receive_messages, '_messaging_manager', None)
+        agent_role = getattr(receive_messages, '_agent_role', 'unknown')
+
+    if not messaging_manager:
+        return "Messaging system not initialized."
+    
+    try:
+        messages = messaging_manager.get_messages(recipient=agent_role, since_id=since_id)
+        
+        if not messages:
+            return "No new messages."
+            
+        output = []
+        for m in messages:
+            # Mark as seen if we are using context
+            if m['message_id'] not in seen_ids:
+                seen_ids.add(m['message_id'])
+            
+            output.append(f"[{m['timestamp']}] FROM: {m['sender']} TYPE: {m['message_type']}")
+            output.append(f"CONTENT: {m['content']}")
+            output.append(f"ID: {m['message_id']}")
+            output.append("-" * 20)
+            
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error receiving messages: {e}"
+
+
+# --- Tool Definitions for Agent Consumption ---
 worker_tools = [
                      FunctionTool(list_dir),
                      FunctionTool(read_file),
@@ -1064,7 +1312,11 @@ worker_tools = [
                      FunctionTool(enrich_task_context),
                      FunctionTool(request_turn_budget),
                      FunctionTool(record_turn_usage),
-                     FunctionTool(update_sprint_task_status)
+                     FunctionTool(update_sprint_task_status),
+                     FunctionTool(search_memory),
+                     FunctionTool(save_learning),
+                     FunctionTool(send_message),
+                     FunctionTool(receive_messages)
 ]
 
 orchestrator_tools = [FunctionTool(update_sprint_task_status)]
