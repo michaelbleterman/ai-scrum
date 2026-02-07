@@ -31,5 +31,5 @@ loop while (sprint_status != "Verified"):
 ```
 
 ## Phase 3: Closure
-- **Demo:** Orchestrator generates `demo_notes.md` in `project_tracking/`.
+- **Demo:** Orchestrator generates `DEMO_WALKTHROUGH.md` in `project_tracking/`.
 - **Retro:** Agents append "Lessons Learned" to `backlog.md`.
