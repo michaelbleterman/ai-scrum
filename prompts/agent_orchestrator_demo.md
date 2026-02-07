@@ -24,6 +24,7 @@ Generate a user-friendly walkthrough document that showcases what was built duri
 
 3. **Create Demo Walkthrough:**
    - Generate `project_tracking/DEMO_WALKTHROUGH.md`
+   - **CRITICAL**: You MUST use the `write_file` tool to create this file. Do not just chat the content.
    - Include:
      - **Sprint Summary**: What was built and why
      - **New Features**: List of new functionality with descriptions

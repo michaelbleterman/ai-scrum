@@ -381,10 +381,11 @@ async def run_parallel_execution(
                         f"========================\n"
                     )
 
-                    # --- Reviewer Step (New) ---
-                    # Only run review for tasks that are NOT already in progress (to avoid re-reviewing active work)
-                    # and not blocked (unless we decide to review blocked tasks to unblock them? For now, standard flow)
-                    if status == "todo":
+                    # --- Reviewer Step (Only for tasks with [REVIEW] tag) ---
+                    # Skip review for tasks without [REVIEW] tag to avoid analysis paralysis
+                    has_review_tag = "[REVIEW]" in desc.upper()
+                    
+                    if status == "todo" and has_review_tag:
                         log(f"\n    [Worker {worker_id} -> Task {task_index+1}] Starting Reviewer for: @{role_raw}: {desc}")
                         
                         reviewer_agent = agent_factory(
@@ -981,8 +982,14 @@ async def run_demo_phase(session_service, framework_instruction, sprint_file, ag
 
     await run_demo()
     
-    log("    Demo Walkthrough generated: project_tracking/DEMO_WALKTHROUGH.md")
-    log("    [ACTION REQUIRED] Please review the demo file.")
+    # Verify Demo Artifact
+    demo_file = os.path.join(SprintConfig.get_sprint_dir(), "DEMO_WALKTHROUGH.md")
+    if os.path.exists(demo_file):
+        log("    Demo Walkthrough generated: project_tracking/DEMO_WALKTHROUGH.md")
+        log("    [ACTION REQUIRED] Please review the demo file.")
+    else:
+        log("    [!] WARNING: Demo Walkthrough artifact NOT found. Orchestrator may have failed to write file.")
+    
     
     feedback = ""
     # Capture Feedback
